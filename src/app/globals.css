@@ -1,0 +1,201 @@
+@import "tailwindcss";
+
+/* Self-hosted Google Fonts — see /fonts/kimi-fonts.css (@font-face block
+   for Cormorant Garamond + Noto Serif JP + Noto Sans JP + Noto Serif SC,
+   each with unicode-range chunking). Loaded via <link> in layout.tsx so
+   open-source / 大陆 build doesn't need to fetch Google at build time. */
+:root {
+  --font-cormorant: "Cormorant Garamond", Georgia, serif;
+  --font-noto-serif-jp: "Noto Serif JP", serif;
+  --font-noto-sans-jp: "Noto Sans JP", system-ui, sans-serif;
+  --font-noto-serif-sc: "Noto Serif SC", "Songti SC", "STSong", serif;
+}
+
+@theme {
+  --color-base: #0c0c0c;
+  --color-deep-charcoal: #1a1a1a;
+  --color-muted-gold: #b8a070;
+  --color-accent-warm: #c4a060;
+  --color-muted-rose: #9a7a7a;
+  --color-deep-red: #8b3a3a;
+  --color-silver: #b8b0a8;
+  --color-text: #d8d0c8;
+  --color-muted-grey: #8a8a8a;
+
+  --font-serif: var(--font-cormorant), var(--font-noto-serif-jp), Georgia, serif;
+  --font-sans: var(--font-noto-sans-jp), system-ui, sans-serif;
+}
+
+html,
+body {
+  background: var(--color-base);
+  color: var(--color-text);
+}
+
+/* EntryMotion FOUC gate. inline script sets `kimi-entry-pending` if user
+   never seen entry; hide all body children except the entry overlay
+   until EntryMotion timeline completes + removes class. */
+html.kimi-entry-pending body > *:not(.kimi-entry-motion-overlay) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* PullToRefresh — color tokens follow theme. Component reads var() so it
+   doesn't need to re-render on cookie change. */
+:root {
+  --kimi-ptr-color: #b8814a;
+  --kimi-ptr-color-armed: #c4a060;
+  --kimi-ptr-bg-tint: rgba(184, 129, 74, 0.10);
+  --kimi-ptr-glow: rgba(196, 160, 96, 0.55);
+}
+
+/* Day mode body bg matches /room day palette mauve cream — keeps page
+   transitions from flashing dark when navigating between server-rendered
+   pages. Server layout sets data-theme on <html> based on kimi-theme cookie.
+   Also overrides every Tailwind color token used by backstage pages so
+   their hardcoded class names (text-muted-gold, etc.) resolve to day-coherent
+   values instead of leaking夜色 onto玫瑰 ivory bg. */
+html[data-theme="day"],
+html[data-theme="day"] body {
+  background: #ebdfd4;
+  color: #1a0e0a;
+}
+
+html[data-theme="day"] {
+  /* color tokens — Rose Gothic day palette */
+  --color-base: #ebdfd4;          /* paper light (used as bg fallback) */
+  --color-deep-charcoal: #dccfc2; /* paper darker (cards / panels) */
+  --color-muted-gold: #8a6558;    /* bronze — replaces night gold */
+  --color-accent-warm: #a42b5e;   /* Mucha pink — primary accent */
+  --color-muted-rose: #a42b5e;
+  --color-deep-red: #5a1820;      /* oxblood */
+  --color-silver: #a89890;        /* silver gold */
+  --color-text: #1a0e0a;          /* ink */
+  --color-muted-grey: #6a5a52;    /* warm grey (was cool grey for night) */
+
+  /* PTR */
+  --kimi-ptr-color: #a42b5e;
+  --kimi-ptr-color-armed: #5a1820;
+  --kimi-ptr-bg-tint: rgba(164, 43, 94, 0.10);
+  --kimi-ptr-glow: rgba(90, 24, 32, 0.55);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-weight: 350;
+  letter-spacing: 0.01em;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-serif);
+  font-weight: 300;
+  letter-spacing: 0.02em;
+}
+
+img {
+  filter: saturate(0.85) brightness(0.92);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--color-muted-gold);
+  color: var(--color-base);
+}
+
+/* ---- page transition fade ---- */
+/* CSS view-transitions (Chrome 126+ cross-doc) skipped — Safari 不支持 +
+   Next.js App Router 是 same-doc client routing. 改用 React-driven:
+   PageTransition wrapper 在 pathname 变时 trigger fade-in. */
+/* 2026-05-12: 加 opacity 0 → 1 — 之前 only translateY 6px 几乎看不见, owner
+   报 ops 没 fade. ChatRoom 黑屏问题已通过 PageTransition SKIP_PATHS 处理
+   (chat 不跑 animation 不会 inherit). 配合 PageTransition 用 useLayoutEffect
+   + animation-fill-mode: both — paint 前已是 from 状态, 无白闪. */
+@keyframes kimi-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* ---- micro-anim ① ③ ⑤ (2026-05-12 owner pick) ---- */
+/* ① button hover scale + shadow */
+.kimi-btn-anim {
+  transition:
+    transform 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.kimi-btn-anim:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 3px 10px rgba(184, 129, 74, 0.22);
+}
+.kimi-btn-anim:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* ③ card hover lift */
+.kimi-card-lift {
+  transition:
+    transform 240ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.kimi-card-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.10);
+}
+
+/* ⑤ rose tap pulse — add this class for ~340ms on tap, then remove */
+@keyframes kimi-rose-pulse {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.35);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.kimi-rose-tap-active {
+  animation: kimi-rose-pulse 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: center;
+  display: inline-block;
+}
+
+@keyframes kimi-pulse-dot {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+}
+
+/* disc spin — used by /room/disc + /room/calendar/finance turntable. */
+@keyframes kimi-disc-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.kimi-disc-spin {
+  animation: kimi-disc-rotate 10s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kimi-disc-spin { animation: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-page-transition] {
+    animation: none !important;
+  }
+}
