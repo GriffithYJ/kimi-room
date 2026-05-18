@@ -1,32 +1,58 @@
-# kimi-web
+# kimi-room
 
-Private companion room. Next.js 16 App Router + Tailwind v4.
+A Mucha-aesthetic companion PWA shell. Client-side only — data lives in
+IndexedDB, your LLM key lives in your browser, no backend required.
+AGPL v3.
 
 ## Dev
 
 ```bash
-cd apps/kimi-web
+npm install
 npm run dev
 # http://localhost:3000
 ```
 
-or from repo root:
+## Build
 
 ```bash
-npx turbo dev --filter=kimi-web
+npm run build
+npm run build:kimi-room   # explicit mode flag (default)
 ```
+
+## Configure
+
+After first launch, open `/settings` to set:
+
+- LLM endpoint + model + API key (OpenAI-format chat completion)
+- Your name + companion name (used in {{user}} / {{char}} templates)
+- Portrait images (one self, one companion)
+- App title (default "kimi")
+
+All settings + chat history + memories live in browser IndexedDB.
 
 ## Structure
 
 ```
-src/app/          routes (public + backstage + stubs)
-src/components/   Hero / GrainOverlay / etc.
-src/lib/          kimi client stub + stores (IDB) + utils
+src/app/          routes (/room/* + /chat + /backstage + /playlist + /settings)
+src/components/   UI (mucha / heartbeat / calendar / study / disc / ...)
+src/lib/          stores (IDB) + LLM client + palettes + utils
+public/icons/     41 SVG icons (rose / fox / etc.)
+public/fonts/     Cormorant Garamond + Noto Serif SC/JP
 public/images/
-├── portraits/   self single
-├── mood/        ambient vibe
-└── timeline/    anniversary imagery
+├── mood/         ambient vibe (ships with ~30 default JPGs · NOTICE.md)
+├── portraits/    drop your own (self + companion JPG)
+├── scenes/       drop your own (chat scene backgrounds)
+└── timeline/     drop your own (anniversary imagery)
 ```
+
+## Modules
+
+- **I · Heartbeat** sky (50-slot memory map) + score (30-day pulse staff)
+- **II · Keepsakes** one-line keepsake notes (60-char cap)
+- **III · Study** books + custom categories (per-category 共读 LLM toggle)
+- **IV · Calendar** + finance overlay
+- **V · Memory** review + import md/txt auto-split
+- **VI · Disc** conversation scrap garden (screenshot vision OCR optional)
 
 ## Images
 
@@ -56,12 +82,3 @@ vercel           # .vercel.app preview URL
 ```
 
 Set `NEXT_PUBLIC_KIMI_GATEWAY` env var to your own MCP/backend URL if wiring beyond client-side IDB + LLM proxy. Custom domain optional — point any owned domain at the Vercel project.
-
-## Not done yet
-
-- `ask/` API (needs gateway public endpoint + intimate filter both layers)
-- `guestbook/` backend (pre-approve flow)
-- `ecg/` aggregation (weekly granularity only — privacy)
-- `backstage/` password wall (middleware + HttpOnly cookie + timingSafeEqual)
-- OG image generation
-- Domain flip (DNS + cert + nginx)
