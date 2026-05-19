@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
+import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
 
 // Grow a textarea to fit its content, capped at maxPx px.
 function useAutoResize(value: string, maxPx = 360) {
@@ -143,6 +144,18 @@ export function ChatRoom() {
   const [editingHeader, setEditingHeader] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
   const [showBgPicker, setShowBgPicker] = useState(false);
+  const [sysStats, setSysStats] = useState<{
+    spChars: number;
+    memInjectOn: boolean;
+    memTotalActive: number;
+  } | null>(null);
+
+  // Load sys-prompt + memory stats when drawer opens (re-fetch each time
+  // so user sees fresh count after editing /backstage/settings + returning).
+  useEffect(() => {
+    if (!showBgPicker) return;
+    void getSystemContextStats().then(setSysStats);
+  }, [showBgPicker]);
 
   const [session, setSession] = useState<SessionState>(() => ({
     sessionId: `session-${Date.now()}`,
@@ -290,10 +303,14 @@ export function ChatRoom() {
       return;
     }
     try {
-      const llmMsgs: LLMChatMessage[] = msgs.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
+      const sys = await buildSystemMessage();
+      const llmMsgs: LLMChatMessage[] = [];
+      if (sys.text) {
+        llmMsgs.push({ role: "system", content: sys.text });
+      }
+      for (const m of msgs) {
+        llmMsgs.push({ role: m.role, content: m.content });
+      }
       const r = await llmChat(llmMsgs);
       const text = r.text?.trim() || "(空响应)";
       setSession((s) => ({
@@ -711,6 +728,51 @@ export function ChatRoom() {
               </button>
             ))}
           </div>
+
+          {/* system context · read-only · edit at /backstage/settings */}
+          <div
+            style={{
+              fontSize: 9,
+              letterSpacing: 2,
+              color: p.inkMute,
+              textTransform: "uppercase",
+              marginBottom: 6,
+            }}
+          >
+            system context
+          </div>
+          <Link
+            href="/backstage/settings"
+            style={{
+              display: "block",
+              padding: "8px 10px",
+              fontSize: 10,
+              lineHeight: 1.5,
+              border: `0.4px solid ${p.hairline}`,
+              borderRadius: 6,
+              color: p.inkSoft,
+              textDecoration: "none",
+              fontFamily: FONT_STACK,
+              marginBottom: 12,
+            }}
+          >
+            {sysStats ? (
+              <>
+                <div>
+                  SP {sysStats.spChars} 字 ·{" "}
+                  {sysStats.memInjectOn
+                    ? `${sysStats.memTotalActive} 条 memory 注入`
+                    : "memory 不注入"}
+                </div>
+                <div style={{ marginTop: 4, color: p.inkMute, fontSize: 9, letterSpacing: 1 }}>
+                  → /backstage/settings
+                </div>
+              </>
+            ) : (
+              <span style={{ color: p.inkMute }}>…</span>
+            )}
+          </Link>
+
           <button
             type="button"
             onClick={newWindow}

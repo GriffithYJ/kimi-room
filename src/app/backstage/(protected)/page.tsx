@@ -11,11 +11,25 @@ export default function BackstagePage() {
       <ul className="mt-16 space-y-3 text-sm">
         <li>
           <Link
+            href="/backstage/settings"
+            className="text-muted-gold hover:text-accent-warm tracking-[0.2em] uppercase"
+          >
+            /settings
+          </Link>
+          <span className="text-[10px] text-muted-grey/60 ml-3">
+            system prompt · memory injection
+          </span>
+        </li>
+        <li>
+          <Link
             href="/backstage/ops"
             className="text-muted-gold hover:text-accent-warm tracking-[0.2em] uppercase"
           >
             /ops
           </Link>
+          <span className="text-[10px] text-muted-grey/60 ml-3">
+            backup · export / import / empty
+          </span>
         </li>
         <li>
           <Link
