@@ -123,7 +123,7 @@ export default function SettingsPage() {
     setCharName(charName);
     setUserName(userName);
     setLLMConfig(llm);
-    flash("saved");
+    flash("保存了");
   }
 
   async function onPickPortrait(
@@ -138,18 +138,19 @@ export default function SettingsPage() {
       if (target === "self") await setSelfPortrait(base64, contentType);
       else await setOtherPortrait(base64, contentType);
       await refreshPortraits();
-      flash(`${target} portrait saved`);
+      flash(`${target === "self" ? "你" : "TA"} 的头像上传了`);
     } catch (err) {
-      flash(`upload failed: ${(err as Error).message}`, "err");
+      flash(`上传失败: ${(err as Error).message}`, "err");
     }
   }
 
   async function onClearPortrait(target: "self" | "other") {
-    if (!confirm(`Remove ${target} portrait?`)) return;
+    const cn = target === "self" ? "你" : "TA";
+    if (!confirm(`删 ${cn} 的头像?`)) return;
     if (target === "self") await clearSelfPortrait();
     else await clearOtherPortrait();
     await refreshPortraits();
-    flash(`${target} portrait removed`);
+    flash(`${cn} 的头像删了`);
   }
 
   async function onToggleDemo() {
@@ -158,14 +159,14 @@ export default function SettingsPage() {
       if (demoOn) {
         const r = await removeDemo();
         setDemoOn(false);
-        flash(`demo removed · ${r.removed} entries`);
+        flash(`示例清了 · ${r.removed} 条`);
       } else {
         const r = await seedDemo();
         setDemoOn(true);
-        flash(`demo seeded · ${r.added} entries`);
+        flash(`示例塞好了 · ${r.added} 条`);
       }
     } catch (err) {
-      flash(`demo toggle failed · ${(err as Error).message}`, "err");
+      flash(`示例切换失败 · ${(err as Error).message}`, "err");
     } finally {
       setDemoBusy(false);
     }
@@ -180,9 +181,9 @@ export default function SettingsPage() {
 
   return (
     <main className="flex-1 px-6 md:px-16 py-32">
-      <h1 className="font-serif text-5xl tracking-widest text-center">settings</h1>
+      <h1 className="font-serif text-5xl tracking-widest text-center">设置</h1>
       <p className={`mt-6 text-center ${helpCls}`}>
-        instance config · {KIMI_MODE} build
+        实例配置 · {KIMI_MODE} 版
       </p>
 
       <form
@@ -191,7 +192,7 @@ export default function SettingsPage() {
       >
         {/* ── App title ─────────────────────────────────── */}
         <label className="flex flex-col gap-2">
-          <span className={labelCls}>app title</span>
+          <span className={labelCls}>应用名</span>
           <input
             type="text"
             value={title}
@@ -200,14 +201,14 @@ export default function SettingsPage() {
             className={`${inputCls} font-serif text-lg`}
           />
           <span className={helpCls}>
-            top nav display name · localStorage only. PWA home screen name 仍 走{" "}
-            <code>manifest.webmanifest</code> file ({"name"} / {"short_name"}).
+            顶栏显示用 · 仅本地浏览器存. PWA 主屏幕名仍走{" "}
+            <code>manifest.webmanifest</code> 里的 ({"name"} / {"short_name"}).
           </span>
         </label>
 
         {/* ── Char name (template sub) ──────────────────── */}
         <label className="flex flex-col gap-2">
-          <span className={labelCls}>char name</span>
+          <span className={labelCls}>TA 的名字</span>
           <input
             type="text"
             value={charName}
@@ -216,14 +217,14 @@ export default function SettingsPage() {
             className={`${inputCls} font-serif text-lg`}
           />
           <span className={helpCls}>
-            substituted in <code>{"{{char}}"}</code> / <code>{"{{char name}}"}</code>{" "}
-            placeholders · used in keepsake note placeholder, chat persona, LLM prompts.
+            在 <code>{"{{char}}"}</code> / <code>{"{{char name}}"}</code> 占位符里被替换
+            · 用在 keepsake note 占位、chat 人设、LLM prompt.
           </span>
         </label>
 
         {/* ── User name ─────────────────────────────────── */}
         <label className="flex flex-col gap-2">
-          <span className={labelCls}>your name</span>
+          <span className={labelCls}>你的名字</span>
           <input
             type="text"
             value={userName}
@@ -232,16 +233,15 @@ export default function SettingsPage() {
             className={`${inputCls} font-serif text-lg`}
           />
           <span className={helpCls}>
-            substituted in <code>{"{{user}}"}</code> placeholders · used when LLM
-            addresses you in scenarios / RP context.
+            在 <code>{"{{user}}"}</code> 占位符里被替换 · LLM 在 scenario / RP 里称呼你时用.
           </span>
         </label>
 
         {/* ── LLM ───────────────────────────────────────── */}
         <fieldset className="flex flex-col gap-4">
-          <legend className={labelCls}>llm api</legend>
+          <legend className={labelCls}>LLM 接口</legend>
           <label className="flex flex-col gap-1">
-            <span className={helpCls}>endpoint (OpenAI-format chat completion)</span>
+            <span className={helpCls}>endpoint · OpenAI 格式 chat completion</span>
             <input
               type="url"
               value={llm.endpoint}
@@ -251,7 +251,7 @@ export default function SettingsPage() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className={helpCls}>model</span>
+            <span className={helpCls}>model · 模型名</span>
             <input
               type="text"
               value={llm.model}
@@ -261,7 +261,7 @@ export default function SettingsPage() {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className={helpCls}>api key (stored in browser only)</span>
+            <span className={helpCls}>API key · 仅存你本地浏览器</span>
             <input
               type="password"
               value={llm.apiKey}
@@ -274,23 +274,24 @@ export default function SettingsPage() {
         </fieldset>
 
         <button type="submit" className={`${buttonCls} self-start`}>
-          save settings
+          保存
         </button>
       </form>
 
       {/* ── Portraits ───────────────────────────────── */}
       <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">
-        <h2 className={labelCls}>portraits</h2>
+        <h2 className={labelCls}>头像</h2>
         <p className={helpCls}>
-          /room landing 头像 · 走 IDB blob, 跨 device sync 走 future Notion/Supabase
-          adapter. V2 ship 0 portrait, 默认 inline SVG ring placeholder.
+          /room 落地页头像 · 走 IDB blob · 跨设备同步等 Notion / Supabase adapter
+          · 默认空 · 内嵌 SVG ring 占位.
         </p>
         <div className="grid grid-cols-2 gap-6 mt-2">
           {(["self", "other"] as const).map((kind) => {
             const preview = kind === "self" ? selfPreview : otherPreview;
+            const cnLabel = kind === "self" ? "你" : "TA";
             return (
               <div key={kind} className="flex flex-col items-center gap-2">
-                <span className={helpCls}>{kind}</span>
+                <span className={helpCls}>{cnLabel}</span>
                 <div
                   className="w-24 h-24 rounded-full overflow-hidden border border-current/30"
                   style={{
@@ -306,7 +307,7 @@ export default function SettingsPage() {
                     onChange={(e) => onPickPortrait(e, kind)}
                     className="hidden"
                   />
-                  upload
+                  上传
                 </label>
                 {preview && (
                   <button
@@ -314,7 +315,7 @@ export default function SettingsPage() {
                     onClick={() => onClearPortrait(kind)}
                     className={`${buttonCls} text-current/60`}
                   >
-                    remove
+                    删除
                   </button>
                 )}
               </div>
@@ -325,7 +326,11 @@ export default function SettingsPage() {
 
       {/* ── Calendar meds preset ──────────────────── */}
       <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">
-        <h2 className={labelCls}>calendar · 用药 preset</h2>
+        <h2 className={labelCls}>日历 · 用药预设</h2>
+        <p className={helpCls}>
+          在这里加你常吃的药 · /room/calendar 点某天会出现这些药做 tap 加量.
+          0 个 = 不显示用药区.
+        </p>
         <div className="flex flex-col gap-2">
           {meds.map((m) => (
             <div
@@ -338,7 +343,7 @@ export default function SettingsPage() {
                 onClick={() => removeMed(m.key)}
                 className="text-[10px] tracking-widest uppercase text-current/40 hover:text-current"
               >
-                remove
+                删除
               </button>
             </div>
           ))}
@@ -364,17 +369,17 @@ export default function SettingsPage() {
             className={buttonCls}
             style={{ opacity: medDraft.trim() ? 1 : 0.4 }}
           >
-            ＋ add
+            ＋ 加
           </button>
         </div>
       </section>
 
       {/* ── Demo seed data ──────────────────────────────── */}
       <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">
-        <h2 className={labelCls}>示例数据 · demo</h2>
+        <h2 className={labelCls}>示例数据</h2>
         <p className={helpCls}>
-          填一份示例 keepsake / memory / book / calendar / 对话 / sleep 进 IDB
-          看看 6 模块长啥样. 关掉就清掉示例 · 你自己加的数据不动.
+          塞一份示例 keepsake / memory / book / calendar / 对话 进 IDB ·
+          看 6 个模块长什么样. 关掉就清示例 · 你自己加的数据不动.
         </p>
         <div className="flex items-center gap-4">
           <button
@@ -393,9 +398,9 @@ export default function SettingsPage() {
 
       {/* ── Data backup ─────────────────────────────────── */}
       <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">
-        <h2 className={labelCls}>backup</h2>
+        <h2 className={labelCls}>备份</h2>
         <p className={helpCls}>
-          全量 export / import / empty 在 advanced 区:{" "}
+          全量导出 / 导入 / 清空 在:{" "}
           <Link href="/backstage/ops" className="underline-offset-4 hover:underline">
             /backstage/ops
           </Link>
@@ -404,10 +409,10 @@ export default function SettingsPage() {
 
       {/* ── Adapter picker (stub) ─────────────────────── */}
       <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">
-        <h2 className={labelCls}>memory backend</h2>
+        <h2 className={labelCls}>记忆后端</h2>
         <p className={helpCls}>
-          现 IndexedDB (local, 0 config). NotionAdapter / SupabaseAdapter
-          coming · settings 切到 cloud sync.
+          现用 IndexedDB · 本地 · 0 配置. NotionAdapter / SupabaseAdapter 后续 ·
+          在这里切到云同步.
         </p>
         <div className="text-xs text-current/40 italic">
           Notion · Supabase · custom adapter · TBD

@@ -39,7 +39,7 @@ export default function BackstageSettings() {
   function onSave() {
     setSystemPrompt(sp);
     setMemoryInject(inject);
-    flash("saved");
+    flash("保存了");
     void refreshStats();
   }
 
@@ -56,28 +56,28 @@ export default function BackstageSettings() {
     <main className="flex-1 px-4 md:px-12 py-16 max-w-[1280px] mx-auto text-muted-grey">
       <div className="flex items-baseline justify-between mb-2">
         <h1 className="font-serif text-3xl tracking-widest text-muted-gold">
-          settings
+          人设
         </h1>
         <Link
           href="/backstage"
           className="text-[10px] tracking-[0.3em] uppercase text-muted-grey hover:text-muted-gold"
         >
-          ← backstage
+          ← 返回
         </Link>
       </div>
       <p className="text-[10px] italic text-muted-grey/70 mb-12">
-        chat 的系统提示 + memory 注入 · 配置 /chat 用的 context
+        TA 的系统提示 + 记忆注入 · /chat 用的 context
       </p>
 
       {/* ── System prompt ──────────────────────────────── */}
       <section className="mb-12 max-w-2xl">
-        <h2 className={labelCls}>system prompt</h2>
+        <h2 className={labelCls}>系统提示词 · system prompt</h2>
         <p className={`${helpCls} mt-2`}>
           chat 调 LLM 时塞为第一条 system message. 支持{" "}
           <code className="text-muted-gold/80">{`{{char}}`}</code> /{" "}
           <code className="text-muted-gold/80">{`{{user}}`}</code> /{" "}
           <code className="text-muted-gold/80">{`{{scenario}}`}</code> 模板替换
-          (在 /backstage/settings 配 char/user 名字).
+          (在 /backstage/settings 配 TA / 你的名字).
         </p>
         <textarea
           value={sp}
@@ -88,13 +88,13 @@ export default function BackstageSettings() {
           style={{ fontFamily: "ui-monospace, monospace" }}
         />
         <div className="mt-2 text-[10px] text-muted-grey/60">
-          {sp.length} 字 · 留空 = 不注入 system prompt
+          {sp.length} 字 · 留空 = 不注入系统提示词
         </div>
       </section>
 
       {/* ── Memory injection ───────────────────────────── */}
       <section className="mb-12 max-w-2xl">
-        <h2 className={labelCls}>memory injection</h2>
+        <h2 className={labelCls}>记忆注入 · memory injection</h2>
         <p className={`${helpCls} mt-2`}>
           开启后 chat 会把{" "}
           <Link
@@ -103,7 +103,7 @@ export default function BackstageSettings() {
           >
             /room/memory-review
           </Link>{" "}
-          里 active=true 的 memory 按 order 排序拼接到 system prompt 末尾.
+          里 active 的记忆按 order 排序拼接到系统提示词末尾.
           上限 {MEM_BUDGET} 字 · 超了按 order 截.
         </p>
         <div className="mt-4 flex items-center gap-4">
@@ -120,7 +120,7 @@ export default function BackstageSettings() {
           </button>
           {stats && (
             <span className="text-[10px] text-muted-grey/70">
-              {stats.memTotalActive} 条 active memory · 当前 {stats.memInjectOn ? "注入中" : "未注入"}
+              {stats.memTotalActive} 条 active 记忆 · 当前 {stats.memInjectOn ? "注入中" : "未注入"}
             </span>
           )}
         </div>
@@ -133,7 +133,7 @@ export default function BackstageSettings() {
           onClick={onSave}
           className="px-6 py-2 border border-muted-gold text-[11px] tracking-[0.25em] uppercase text-muted-gold hover:bg-muted-gold/10 rounded"
         >
-          save
+          保存
         </button>
       </section>
 
