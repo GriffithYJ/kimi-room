@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
-import { isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
+import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
 
 // Grow a textarea to fit its content, capped at maxPx px.
@@ -321,13 +321,14 @@ export function ChatRoom() {
       }));
     } catch (e) {
       console.error("[chat:llm]", e);
+      const fe = friendlyLLMError(e);
       setSession((s) => ({
         ...s,
         msgs: s.msgs.map((m) =>
           m.id === replyId
             ? {
                 ...m,
-                content: `(出错了: ${(e as Error).message}. 检查 LLM endpoint + key in /settings.)`,
+                content: `⚠ ${fe.title}\n\n${fe.detail}\n\n→ ${fe.hint}`,
               }
             : m,
         ),
