@@ -6,7 +6,7 @@ const KEY_CHAR_NAME = "kimi-char-name";
 const KEY_USER_NAME = "kimi-user-name";
 const KEY_SCENARIO = "kimi-scenario";
 
-const DEFAULT_CHAR_NAME = "kimi";
+const DEFAULT_CHAR_NAME = "他";
 const DEFAULT_USER_NAME = "you";
 const DEFAULT_SCENARIO = "";
 

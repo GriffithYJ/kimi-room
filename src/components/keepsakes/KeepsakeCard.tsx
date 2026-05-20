@@ -92,7 +92,7 @@ export function KeepsakeCard({
 }) {
   const [state, setState] = useState<CardState>({});
   const [busy, setBusy] = useState(false);
-  const [charName, setCharName] = useState("kimi");
+  const [charName, setCharName] = useState("他");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {

@@ -1234,7 +1234,7 @@ function CellEditor({
   const [event, setEvent] = useState(data.event ?? "");
   const [note, setNote] = useState(data.note ?? "");
 
-  // ── ✦ kimi 看看今天 · LLM comment on the day · uses /backstage/settings SP
+  // ── ✦ ask him · LLM comment on the day · uses /backstage/settings SP
   // + memory injection · sees events + memo + flow.
   const [kimiBusy, setKimiBusy] = useState(false);
   const [kimiComment, setKimiComment] = useState<string | null>(null);
@@ -1603,7 +1603,7 @@ function CellEditor({
           />
         </Section>
 
-        <Section label="kimi 看看今天">
+        <Section label="他 看看今天">
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <button
               type="button"
@@ -1623,7 +1623,7 @@ function CellEditor({
                 opacity: kimiBusy ? 0.5 : 1,
               }}
             >
-              {kimiBusy ? "..." : "✦ ask kimi"}
+              {kimiBusy ? "..." : "✦ ask him"}
             </button>
             {kimiComment && (
               <div

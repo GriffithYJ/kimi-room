@@ -452,7 +452,7 @@ export function BookDetailClient({
                     opacity: busy ? 0.5 : 1,
                   }}
                 >
-                  {busy ? "· 读着 ..." : "✨ ask"}
+                  {busy ? "· 读着 ..." : "✨ ask him"}
                 </button>
               ) : (
                 <div

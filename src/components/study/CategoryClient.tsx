@@ -393,7 +393,7 @@ export function CategoryClient({
                                   opacity: foxBusyId === e.id ? 0.5 : 1,
                                 }}
                               >
-                                {foxBusyId === e.id ? "· 读着 ..." : "✨ ask"}
+                                {foxBusyId === e.id ? "· 读着 ..." : "✨ ask him"}
                               </button>
                             ) : (
                               <div
