@@ -104,6 +104,22 @@ Supabase / Postgres / Obsidian / Notion / Ombre-brain 任何 DB。
 ```bash
 npm install
 npm run dev
+# http://localhost:3000
+```
+
+## Structure
+
+```
+src/app/          routes (/room/* + /chat + /backstage + /playlist + /settings)
+src/components/   UI (mucha / heartbeat / calendar / study / disc / ...)
+src/lib/          stores (IDB) + LLM client + palettes + utils
+public/icons/     41 SVG icons (rose / fox / etc.)
+public/fonts/     Cormorant Garamond + Noto Serif SC/JP
+public/images/
+├── mood/         ambient vibe (ships with ~30 default JPGs · NOTICE.md)
+├── portraits/    drop your own (self + companion JPG)
+├── scenes/       drop your own (chat scene backgrounds)
+└── timeline/     drop your own (anniversary imagery)
 ```
 
 ## License
@@ -111,17 +127,6 @@ npm run dev
 AGPL v3 — fork 随意，闭源不行。
 
 详细文档 → [wiki](https://kimi-to.com/about/wiki) · [FAQ](https://kimi-to.com/about/faq)
-
----
-## Dev
-
-```bash
-npm install
-npm run dev
-# http://localhost:3000
-
-```
-
 
 ## Images
 
