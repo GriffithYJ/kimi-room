@@ -212,20 +212,6 @@ export function GraphView({ G, data, theme }: { G: typeof GOTHIC; data: GraphDat
       // rings (the "两排星点" — a radial color-stop contour crosses each side at
       // two y's). The rose's own halo carries the atmosphere now.
 
-      // clip nebula + galaxy to the glass interior — every star stays inside the bell, no overflow
-      c.save();
-      {
-        const w = M * 0.30, bY = cy + M * 0.40, fY = bY - M * 0.015, sY = cy - M * 0.16, tY = cy - M * 0.42, nW = M * 0.052;
-        c.beginPath(); c.moveTo(cx - w, bY); c.lineTo(cx - w, fY);
-        c.quadraticCurveTo(cx - w * 1.02, (fY + sY) / 2, cx - w * 0.99, sY);
-        c.quadraticCurveTo(cx - w, tY, cx - nW, tY + M * 0.012);
-        c.quadraticCurveTo(cx, tY - M * 0.018, cx + nW, tY + M * 0.012);
-        c.quadraticCurveTo(cx + w, tY, cx + w * 0.99, sY);
-        c.quadraticCurveTo(cx + w * 1.02, (fY + sY) / 2, cx + w, fY);
-        c.lineTo(cx + w, bY); c.closePath();
-      }
-      c.clip();
-
       // nebula
       if (md !== "ink") {
         c.save(); c.globalCompositeOperation = dk ? "lighter" : "source-over";
@@ -279,7 +265,6 @@ export function GraphView({ G, data, theme }: { G: typeof GOTHIC; data: GraphDat
         }
       }
 
-      c.restore(); // end glass clip — bell + rose draw on top, unclipped
       drawBell(Th, dk);
     }
 
