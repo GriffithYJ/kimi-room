@@ -134,13 +134,13 @@ public/images/
 
 ## License
 
-代码：[AGPL v3](LICENSE) © 2026 marikagura。开源——clone / fork / 改 / 自托管都行，衍生和联网服务需**继续开源**（copyleft）。
+代码：[AGPL v3](LICENSE) © 2026 marikagura。开源——clone / fork / 改 / 自托管都行。
 
 **请勿商用。** 作者不希望这套被商业化（出售、做成付费服务）；要商用请先联系。
 
 美术（手绘金线 SVG / PNG，狐狸 · 玫瑰那套）：[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)，署名 + 非商用；`entry-motion` 品牌标识保留、请替换。第三方氛围图与字体见 [NOTICE.md](NOTICE.md)。
 
-详细文档 → [wiki](https://kimi-to.com/about/wiki) · [FAQ](https://kimi-to.com/about/faq)
+详细文档 → [manua](https://kimi-to.com/about/wiki)
 
 ## Images
 
