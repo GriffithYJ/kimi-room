@@ -77,7 +77,7 @@ export function AtlasClient({ places, p, isDay }: { places: TravelPlace[]; p: At
           <div style={{ fontSize: 11, marginTop: 8, letterSpacing: 2 }}>窗台还空着 · the windowsill is still empty</div>
         </div>
       ) : view === "entry" && sel ? (
-        <EntryView place={sel} p={p} fc={fc} />
+        <EntryView place={sel} p={p} fc={fc} isDay={isDay} />
       ) : view === "timeline" ? (
         <TimelineView places={places} p={p} onOpen={openPlace} />
       ) : view === "cabinet" ? (
@@ -139,26 +139,9 @@ function SwitchIcons({ view, setView, accent, mute }: { view: View; setView: (v:
   );
 }
 
-// Center latch rose — a curved stem + one leaf + a bloom (outer halo + inner petals).
-// `color` is the stem/leaf, `accent` is the bloom.
-function RoseGlyph({ color, accent, size = 24 }: { color: string; accent?: string; size?: number }) {
-  const a = accent ?? color;
-  return (
-    <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-hidden style={{ display: "block", color }}>
-      <path d="M6 38 Q4 24 14 16" fill="none" stroke="currentColor" strokeWidth="0.7" />
-      <path d="M9 27 Q3 25 2 19 Q8 21 10 26" fill="none" stroke="currentColor" strokeWidth="0.5" opacity="0.8" />
-      <g transform="translate(15 11)" stroke={a} fill="none" strokeWidth="0.7">
-        <circle cx="0" cy="0" r="6.4" opacity="0.5" />
-        <path d="M-3.4 1.6 Q0 -4.6 3.4 1.6 Q0 4.2 -3.4 1.6 Z" />
-        <path d="M-4.8 -1 Q0 4 4.8 -1" opacity="0.7" />
-        <path d="M0 -5 Q3 -2 2.4 1.4" opacity="0.6" />
-      </g>
-    </svg>
-  );
-}
 
 // ════ ENTRY — open window (iron arch + center rose latch + title + narration + fragment) ════
-function EntryView({ place, p, fc }: { place: TravelPlace; p: AtlasPalette; fc: FragmentColors }) {
+function EntryView({ place, p, fc, isDay }: { place: TravelPlace; p: AtlasPalette; fc: FragmentColors; isDay: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [open, setOpen] = useState(false);
   const body = place.body || "";
@@ -191,10 +174,17 @@ function EntryView({ place, p, fc }: { place: TravelPlace; p: AtlasPalette; fc: 
                 background: `radial-gradient(circle at 40% 34%, ${p.paper}, ${p.bgSolid})`,
                 boxShadow: `0 0 22px ${p.accent}40`,
                 cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                overflow: "hidden", padding: 0,
                 transition: "box-shadow 300ms",
               }}
             >
-              <RoseGlyph color={p.accent} size={42} />
+              {/* center rose latch — the rose tucked into the round knob, tilted like a handle */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={isDay ? "/icons/rose-window-handle-day.png" : "/icons/rose-window-handle.png"}
+                alt=""
+                style={{ width: 23, height: 66, objectFit: "contain", transform: "rotate(20deg)", display: "block" }}
+              />
             </button>
           )}
           {/* reclose ✕ — shown when open, tap to close. Small corner circle, dark
