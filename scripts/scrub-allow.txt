@@ -1,0 +1,4 @@
+# Paths/regexes allowed to contain otherwise-private tokens (one per line).
+# scrub-scan.sh treats matches in these as OK (grep -v). Use sparingly.
+# safety.ts IS the content filter — it must literally contain the denylisted words.
+src/lib/safety\.ts
