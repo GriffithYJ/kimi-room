@@ -519,7 +519,7 @@ export function GraphView({ G, data, theme }: { G: typeof GOTHIC; data: GraphDat
 
   return (
     <>
-      <KimiTopNav title="HEARTBEAT" sub="graph · 图谱" P={G} icon="✦" iconColor={G.rose1} backHref="/room/heartbeat" />
+      <KimiTopNav title="HEARTBEAT" sub="graph · 图谱" P={G} icon="✦" iconColor={G.rose1} backHref="/room" />
 
       {/* counts — small data line, no prose title */}
       <div style={{ textAlign: "center", marginTop: 14, color: G.mute, fontSize: 10, letterSpacing: 3, fontFamily: SCORE_FONT_BODY, fontStyle: "italic" }}>
