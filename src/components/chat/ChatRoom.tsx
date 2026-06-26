@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
@@ -38,6 +38,7 @@ type ChatMessage = {
   content: string;
   thinking?: string; // extended thinking 块 (opus 4.6 reasoning)
   tools?: ToolEvent[]; // MCP tool 调用记录
+  cost?: { inTok: number; outTok: number }; // token usage from the LLM response (browser-direct; USD unknown — endpoint/model price varies)
   ts: string; // ISO
 };
 
@@ -313,10 +314,14 @@ export function ChatRoom() {
       }
       const r = await llmChat(llmMsgs);
       const text = r.text?.trim() || "(空响应)";
+      const usage = (r.raw as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage;
+      const cost = usage
+        ? { inTok: usage.prompt_tokens ?? 0, outTok: usage.completion_tokens ?? 0 }
+        : undefined;
       setSession((s) => ({
         ...s,
         msgs: s.msgs.map((m) =>
-          m.id === replyId ? { ...m, content: text } : m,
+          m.id === replyId ? { ...m, content: text, cost } : m,
         ),
       }));
     } catch (e) {
@@ -824,7 +829,7 @@ export function ChatRoom() {
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "16px 16px 4px",
+          padding: "8px 14px 4px",
           position: "relative",
           zIndex: 1,
           // iOS PWA fix: 防止 elastic bounce 带动整个 main / 背景
@@ -946,6 +951,25 @@ export function ChatRoom() {
 // MessageItem
 // ============================================
 
+// Markdown emphasis rendering: *italic* / **bold**. Everything else passes
+// through as-is (line breaks preserved by the parent's pre-wrap). ** matches
+// before *; a span can't cross asterisks/newlines; unpaired asterisks stay literal.
+function renderEmphasis(text: string): ReactNode {
+  const nodes: ReactNode[] = [];
+  const re = /\*\*([^*\n]+?)\*\*|\*([^*\n]+?)\*/g;
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[1] !== undefined) nodes.push(<strong key={k++} style={{ fontWeight: 600 }}>{m[1]}</strong>);
+    else nodes.push(<em key={k++}>{m[2]}</em>);
+    last = re.lastIndex;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes.length > 0 ? nodes : text;
+}
+
 function MessageItem({
   msg,
   palette,
@@ -962,6 +986,9 @@ function MessageItem({
   const [showActions, setShowActions] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [playState, setPlayState] = useState<"idle" | "loading" | "playing" | "error">("idle");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null); // cache the blob url so the same reply isn't re-synthesized
   const isUser = msg.role === "user";
   const p = palette;
 
@@ -978,6 +1005,47 @@ function MessageItem({
       return "";
     }
   }, [msg.ts]);
+
+  // release the cached audio blob on unmount
+  useEffect(
+    () => () => {
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+    },
+    [],
+  );
+
+  // "听" — speak this reply via /api/tts. Reuses the cached blob (the same reply is
+  // not re-synthesized); clicking while playing stops it; on failure it shows 重试.
+  async function playVoice() {
+    if (playState === "playing" && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      setPlayState("idle");
+      return;
+    }
+    try {
+      if (!audioUrlRef.current) {
+        setPlayState("loading");
+        const res = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: msg.content }),
+        });
+        if (!res.ok) throw new Error(`tts ${res.status}`);
+        const blob = await res.blob();
+        audioUrlRef.current = URL.createObjectURL(blob);
+      }
+      const audio = audioRef.current ?? new Audio();
+      audioRef.current = audio;
+      audio.src = audioUrlRef.current;
+      audio.onended = () => setPlayState("idle");
+      audio.onerror = () => setPlayState("error");
+      setPlayState("playing");
+      await audio.play();
+    } catch {
+      setPlayState("error");
+    }
+  }
 
   return (
     <div
@@ -1125,8 +1193,8 @@ function MessageItem({
             lineHeight: 1.65,
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
-            textAlign: isUser ? "right" : "left",
-            // user CC 风气泡; assistant 纯文本无气泡
+            textAlign: "left",
+            // user CC 风气泡(右), assistant 纯文本无气泡; 气泡内文字一律左对齐
             ...(isUser
               ? {
                   color: p.ink,
@@ -1137,11 +1205,27 @@ function MessageItem({
               : {}),
           }}
         >
-          {msg.content || (
+          {msg.content ? (
+            renderEmphasis(msg.content)
+          ) : (
             <span style={{ color: p.inkMute, fontStyle: "italic" }}>...</span>
           )}
         </div>
       </div>
+      {!isUser && msg.cost && (
+        <div
+          style={{
+            marginTop: 3,
+            fontSize: 9,
+            letterSpacing: 1.5,
+            color: p.inkMute,
+            fontFamily: FONT_STACK,
+            textTransform: "uppercase",
+          }}
+        >
+          in {msg.cost.inTok} · out {msg.cost.outTok}
+        </div>
+      )}
       {showActions && (
         <div
           style={{
@@ -1151,6 +1235,34 @@ function MessageItem({
             gap: 8,
           }}
         >
+          {!isUser && msg.content && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                playVoice();
+              }}
+              style={{
+                fontSize: 9,
+                letterSpacing: 2,
+                padding: "3px 10px",
+                border: `0.4px solid ${p.hairline}`,
+                background: "transparent",
+                color: playState === "error" ? p.accent : p.inkMute,
+                cursor: "pointer",
+                fontFamily: FONT_STACK,
+                borderRadius: 4,
+              }}
+            >
+              {playState === "loading"
+                ? "··· 合成中"
+                : playState === "playing"
+                  ? "◼ 停"
+                  : playState === "error"
+                    ? "✕ 重试"
+                    : "听"}
+            </button>
+          )}
           <button
             type="button"
             onClick={(e) => {
