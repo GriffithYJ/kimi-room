@@ -20,11 +20,13 @@ import {
   sleepStore,
   blobStore,
   getAdapter,
+  type StoreContract,
+  type StoreEntry,
 } from "@/lib/stores";
 
 const PAYLOAD_VERSION = "kimi-room-v0.6";
 
-type StoreMap = Record<string, () => { get: (id: string) => Promise<unknown>; put: (entry: any) => Promise<any> }>;
+type StoreMap = Record<string, () => StoreContract<StoreEntry>>;
 
 const IDB_STORES: StoreMap = {
   keepsake: keepsakeStore,

@@ -1018,7 +1018,7 @@ export function DiscClient({ isDay = false }: { isDay?: boolean }) {
           disc 是空的
           <br />
           <span style={{ fontSize: 10, opacity: 0.8 }}>
-            跟他说 "pin 这个" 或者从 footer paste 进来
+            跟他说 &quot;pin 这个&quot; 或者从 footer paste 进来
           </span>
         </div>
       )}

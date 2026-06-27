@@ -871,7 +871,7 @@ function EmptyState({ palette }: { palette: ReturnType<typeof paletteFor> }) {
             textTransform: "uppercase",
           }}
         >
-          all clear · tap "+ 加 memory" 加 第一条
+          all clear · tap &quot;+ 加 memory&quot; 加 第一条
         </span>
       </p>
     </div>
