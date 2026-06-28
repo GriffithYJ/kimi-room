@@ -257,13 +257,13 @@ export function ChatRoom() {
   useEffect(() => {
     if (session.msgs.length === 0) return;
     const t = setTimeout(() => {
-      const firstUser = session.msgs.find((m) => m.role === "user");
+      const firstUser = session.msgs.find((m: ChatMessage) => m.role === "user");
       void chatStore()
         .put({
           id: session.sessionId,
           source: "cc-chat",
           title: firstUser ? firstUser.content.slice(0, 60) : null,
-          messages: session.msgs.map((m) => ({
+          messages: session.msgs.map((m: ChatMessage) => ({
             role: m.role,
             content: m.content,
             ts: m.ts,
@@ -288,7 +288,7 @@ export function ChatRoom() {
   // 事件; V2 简化 non-streaming · 设置 LLM key 在 /settings 后 即可 chat.
   async function streamReply(msgs: ChatMessage[], replyId: string) {
     if (!isLLMConfigured()) {
-      setSession((s) => ({
+      setSession((s: SessionState) => ({
         ...s,
         msgs: s.msgs.map((m) =>
           m.id === replyId
@@ -318,7 +318,7 @@ export function ChatRoom() {
       const cost = usage
         ? { inTok: usage.prompt_tokens ?? 0, outTok: usage.completion_tokens ?? 0 }
         : undefined;
-      setSession((s) => ({
+      setSession((s: SessionState) => ({
         ...s,
         msgs: s.msgs.map((m) =>
           m.id === replyId ? { ...m, content: text, cost } : m,
@@ -327,7 +327,7 @@ export function ChatRoom() {
     } catch (e) {
       console.error("[chat:llm]", e);
       const fe = friendlyLLMError(e);
-      setSession((s) => ({
+      setSession((s: SessionState) => ({
         ...s,
         msgs: s.msgs.map((m) =>
           m.id === replyId
@@ -360,7 +360,7 @@ export function ChatRoom() {
       content: "",
       ts: new Date().toISOString(),
     };
-    setSession((s) => ({ ...s, msgs: [...nextMsgs, replyMsg] }));
+    setSession((s: SessionState) => ({ ...s, msgs: [...nextMsgs, replyMsg] }));
     setDraft("");
     setBusy(true);
     await streamReply(nextMsgs, replyId);
@@ -390,7 +390,7 @@ export function ChatRoom() {
       content: "",
       ts: new Date().toISOString(),
     };
-    setSession((s) => ({ ...s, msgs: [...historyMsgs, replyMsg] }));
+    setSession((s: SessionState) => ({ ...s, msgs: [...historyMsgs, replyMsg] }));
     setBusy(true);
     await streamReply(historyMsgs, replyId);
   }
@@ -859,6 +859,7 @@ export function ChatRoom() {
                 key={m.id}
                 msg={m}
                 palette={p}
+                theme={theme}
                 showTs={showTs}
                 onCopy={() => copyMsg(m.id)}
                 onRetry={isLastAssistant ? retryLast : undefined}
@@ -973,12 +974,14 @@ function renderEmphasis(text: string): ReactNode {
 function MessageItem({
   msg,
   palette,
+  theme,
   showTs,
   onCopy,
   onRetry,
 }: {
   msg: ChatMessage;
   palette: ChatPalette;
+  theme: ChatTheme;
   showTs: boolean;
   onCopy: () => void;
   onRetry?: () => void;
@@ -1067,10 +1070,9 @@ function MessageItem({
           {tsLabel}
         </div>
       )}
-      {/* tool calls — assistant only. 默认 inline 简洁 (name + preview),
-          点击 expand 显示 args JSON. */}
+      {/* tool calls — assistant only. 默认折叠只显示标题，点击箭头展开下拉菜单查看详情 */}
       {!isUser && msg.tools && msg.tools.length > 0 && (
-        <div style={{ marginBottom: 6 }}>
+        <div style={{ marginTop: 6, marginBottom: 8 }}>
           {msg.tools.map((t) => {
             const expanded = expandedTools.has(t.id);
             const formattedArgs = (() => {
@@ -1081,8 +1083,29 @@ function MessageItem({
                 return t.arguments;
               }
             })();
+            const statusColor =
+              t.status === "pending"
+                ? p.inkMute
+                : t.status === "error"
+                  ? "#c06060"
+                  : "#7a9a6a";
+            const statusIcon =
+              t.status === "pending" ? "⋯" : t.status === "error" ? "✕" : "✓";
             return (
-              <div key={t.id} style={{ padding: "1px 0" }}>
+              <div
+                key={t.id}
+                style={{
+                  marginBottom: 4,
+                  borderRadius: 6,
+                  border: `0.5px solid ${p.hairline}`,
+                  background:
+                    theme === "day"
+                      ? "rgba(0,0,0,0.03)"
+                      : "rgba(255,255,255,0.04)",
+                  overflow: "hidden",
+                }}
+              >
+                {/* 标题行 — 带箭头 + 状态 + 工具名 + preview */}
                 <button
                   type="button"
                   onClick={() =>
@@ -1094,42 +1117,103 @@ function MessageItem({
                     })
                   }
                   style={{
-                    fontSize: 11,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "100%",
+                    padding: "6px 10px",
+                    fontSize: 12,
                     letterSpacing: 0.5,
-                    color: p.inkMute,
-                    fontStyle: "italic",
+                    color: p.inkSoft,
                     fontFamily: FONT_STACK,
                     lineHeight: 1.5,
-                    padding: 0,
                     background: "transparent",
                     border: "none",
                     cursor: "pointer",
                     textAlign: "left",
                   }}
                 >
-                  {t.status === "pending" ? "⋯ " : "✓ "}
-                  {t.name}
-                  {t.preview ? ` · ${t.preview}` : ""}
-                </button>
-                {expanded && formattedArgs && (
-                  <pre
+                  {/* 展开/折叠箭头 */}
+                  <span
                     style={{
-                      marginTop: 4,
-                      marginLeft: 16,
-                      paddingLeft: 8,
-                      borderLeft: `2px solid ${p.hairline}`,
-                      fontSize: 11,
-                      lineHeight: 1.55,
-                      color: p.inkSoft,
-                      fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, monospace",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      opacity: 0.85,
+                      fontSize: 9,
+                      color: p.inkMute,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      flexShrink: 0,
+                      transition: "transform 0.15s ease",
+                      transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
                     }}
                   >
-                    {formattedArgs}
-                  </pre>
+                    ▶
+                  </span>
+                  {/* 状态图标 */}
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: statusColor,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {statusIcon}
+                  </span>
+                  {/* 工具名 */}
+                  <span style={{ fontWeight: 500 }}>{t.name}</span>
+                  {/* preview */}
+                  {t.preview && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: p.inkMute,
+                        fontStyle: "italic",
+                        flex: 1,
+                      }}
+                    >
+                      · {t.preview}
+                    </span>
+                  )}
+                </button>
+
+                {/* 下拉展开内容 — 参数 JSON */}
+                {expanded && (
+                  <div
+                    style={{
+                      borderTop: `0.4px solid ${p.hairline}`,
+                      padding: "6px 10px 8px 28px",
+                      background:
+                        theme === "day"
+                          ? "rgba(0,0,0,0.02)"
+                          : "rgba(255,255,255,0.02)",
+                    }}
+                  >
+                    {formattedArgs ? (
+                      <pre
+                        style={{
+                          margin: 0,
+                          fontSize: 11,
+                          lineHeight: 1.6,
+                          color: p.inkSoft,
+                          fontFamily:
+                            "ui-monospace, SFMono-Regular, Menlo, monospace",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          opacity: 0.85,
+                        }}
+                      >
+                        {formattedArgs}
+                      </pre>
+                    ) : (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: p.inkMute,
+                          fontStyle: "italic",
+                        }}
+                      >
+                        无参数
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             );
