@@ -11,7 +11,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 // (content:[{type:"text"}]), so we return that text for RAG injection — we do
 // not try to reconstruct structured rows. See docs/BACKENDS.md.
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
