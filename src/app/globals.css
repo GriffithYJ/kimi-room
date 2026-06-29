@@ -199,3 +199,267 @@ a {
     animation: none !important;
   }
 }
+
+/* ================================================================
+   iPhone-style desktop (springboard) — StatusBar / BottomNav / Icons
+   ================================================================ */
+
+/* ---- Global page-content wrapper (all pages get status-bar + bottom-nav offsets) ---- */
+.kimi-page-content {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-top: calc(44px + env(safe-area-inset-top));
+  padding-bottom: calc(56px + env(safe-area-inset-bottom));
+}
+
+/* ---- StatusBar ---- */
+.kimi-status-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  height: calc(44px + env(safe-area-inset-top));
+  padding: 0 16px;
+  padding-top: env(safe-area-inset-top);
+  display: flex;
+  align-items: center;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-muted-gold);
+  background: var(--color-base);
+}
+
+/* ---- BottomNav ---- */
+.kimi-bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  height: calc(56px + env(safe-area-inset-bottom));
+  padding: 0 20px;
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--color-base);
+  /* color-mix fallback for older browsers: solid muted-gold at 30% opacity */
+  border-top: 0.5px solid rgba(184, 160, 112, 0.30);
+  border-top: 0.5px solid color-mix(in srgb, var(--color-muted-gold) 30%, transparent);
+}
+
+.kimi-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--color-muted-gold);
+  background: none;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 150ms, opacity 150ms;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.kimi-nav-btn:disabled {
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.kimi-nav-btn:active:not(:disabled) {
+  background: rgba(184, 160, 112, 0.18);
+  background: color-mix(in srgb, var(--color-muted-gold) 18%, transparent);
+}
+
+.kimi-nav-extras {
+  display: flex;
+  gap: 12px;
+}
+
+/* ---- Desktop page wrapper (padding handled by .kimi-page-content) ---- */
+.kimi-room-desktop {
+  flex: 1;
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ---- Hero (moon / rose dial) ---- */
+.kimi-desktop-hero {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 24px 0 12px;
+}
+
+.kimi-desktop-hero-link {
+  display: inline-block;
+  line-height: 0;
+  text-decoration: none;
+  transition: transform 200ms;
+}
+
+.kimi-desktop-hero-link:active {
+  transform: scale(0.92);
+}
+
+/* ---- Icon grid ---- */
+.kimi-desktop-grid-wrapper {
+  width: 100%;
+  max-width: 400px;
+  padding: 0 24px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.kimi-desktop-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px 16px;
+  padding: 20px 0;
+  justify-items: center;
+}
+
+/* Tablet: 4 columns */
+@media (min-width: 640px) {
+  .kimi-desktop-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 28px 20px;
+  }
+  .kimi-desktop-grid-wrapper {
+    max-width: 480px;
+  }
+}
+
+/* ---- Single icon ---- */
+.kimi-desktop-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.kimi-desktop-icon-circle {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.kimi-desktop-icon:active .kimi-desktop-icon-circle {
+  transform: scale(0.88);
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.30),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.kimi-desktop-icon-letter {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 300;
+  color: var(--color-text);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.kimi-desktop-icon-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--color-deep-red);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.kimi-desktop-icon-label {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--color-muted-grey);
+  text-align: center;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Extra row (addon links, theme toggle) ---- */
+.kimi-desktop-extra {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 8px 0 20px;
+}
+
+.kimi-desktop-links {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.kimi-desktop-link {
+  padding: 8px 14px;
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: var(--color-muted-grey);
+  font-style: italic;
+  font-family: var(--font-serif);
+  text-decoration: none;
+  opacity: 0.75;
+  transition: opacity 150ms;
+}
+
+.kimi-desktop-link:active {
+  opacity: 1;
+}
+
+.kimi-desktop-link--strong {
+  opacity: 1;
+  color: var(--color-muted-gold);
+}
+
+/* ---- PageTransition inside .kimi-page-content should fill available space ---- */
+.kimi-page-content > [data-page-transition] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}

@@ -6,6 +6,8 @@ import { PageTransition } from "@/components/PageTransition";
 import { PullToRefresh } from "@/components/PullToRefresh";
 import { RegisterSW } from "@/components/RegisterSW";
 import { SwipeBack } from "@/components/SwipeBack";
+import { StatusBar } from "@/components/StatusBar";
+import { BottomNav } from "@/components/BottomNav";
 
 // Fonts self-hosted at /fonts/*.woff2; @font-face declarations in
 // /fonts/kimi-fonts.css. Replaced `next/font/google` so the build doesn't
@@ -180,7 +182,11 @@ export default async function RootLayout({
         <RegisterSW />
         <PullToRefresh />
         <SwipeBack />
-        <PageTransition>{children}</PageTransition>
+        <StatusBar />
+        <div className="kimi-page-content">
+          <PageTransition>{children}</PageTransition>
+        </div>
+        <BottomNav />
       </body>
     </html>
   );
