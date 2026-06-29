@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { ChatRoom } from "@/components/chat/ChatRoom";
 
 // V2 chat · /room 点 rose/moon hero 跳进来. settings 填 LLM key 后 自动 wire
@@ -6,9 +7,16 @@ import { ChatRoom } from "@/components/chat/ChatRoom";
 //
 // canon V1 这 page 走 backstage cookie auth gate (chat 烧 LLM 钱). V2 strip
 // auth · LLM key 自带 即用, 0 web auth.
+//
+// ChatRoom calls useSearchParams → must be wrapped in Suspense
+// (Next.js App Router requirement for client-side search params).
 
 export const dynamic = "force-dynamic";
 
 export default function ChatPage() {
-  return <ChatRoom />;
+  return (
+    <Suspense fallback={null}>
+      <ChatRoom />
+    </Suspense>
+  );
 }
