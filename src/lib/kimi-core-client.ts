@@ -50,7 +50,7 @@ export async function persistCoreMemory(key: string, content: string): Promise<v
 // Recent cross-surface conversation from kimi-core — the merged timeline (chat_read
 // tool). For rendering history another device wrote, or polling for new lines.
 // Returns [] in local mode or on any failure, so the chat degrades to local-only.
-export type CoreChatMsg = { role: "user" | "assistant"; text: string; surface: string; at: string; threadId?: string };
+export type CoreChatMsg = { id: string; role: "user" | "assistant"; text: string; surface: string; at: string; threadId?: string };
 export async function readCoreChat(
   opts: { take?: number; sinceISO?: string; threadId?: string } = {},
 ): Promise<CoreChatMsg[]> {
@@ -69,13 +69,29 @@ export async function readCoreChat(
 }
 
 // Append one chat message to kimi-core (chat_write tool) so other devices see it and
-// it enters the digest path. No-op in local mode; best-effort (never blocks the chat).
-export async function writeCoreChat(role: "user" | "assistant", text: string, threadId?: string): Promise<void> {
-  if (!isCoreBackend() || !text.trim()) return;
+// it enters the digest path. Returns the new CHAT event id so the caller can later
+// delete that exact row (see deleteCoreChat / retry); null in local mode or on any
+// failure. Best-effort — never blocks the chat.
+export async function writeCoreChat(role: "user" | "assistant", text: string, threadId?: string): Promise<string | null> {
+  if (!isCoreBackend() || !text.trim()) return null;
   try {
-    await callCoreTool("chat_write", { role, text, ...(threadId ? { threadId } : {}) });
+    const out = await callCoreTool("chat_write", { role, text, ...(threadId ? { threadId } : {}) });
+    const r = JSON.parse(out) as { ok?: boolean; id?: string };
+    return r.ok && typeof r.id === "string" ? r.id : null;
   } catch {
-    /* best-effort */
+    return null; /* best-effort */
+  }
+}
+
+// Delete one chat message in kimi-core (chat_delete tool). The only delete the room
+// does: retry calls this to drop the reply it's replacing, so the bad answer doesn't
+// linger on other devices or get digested. No-op in local mode; best-effort.
+export async function deleteCoreChat(id: string): Promise<void> {
+  if (!isCoreBackend() || !id) return;
+  try {
+    await callCoreTool("chat_delete", { id });
+  } catch {
+    /* best-effort — never block the chat on a delete */
   }
 }
 

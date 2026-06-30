@@ -7,7 +7,7 @@ import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
-import { readCoreChat, writeCoreChat, readCoreThreads } from "@/lib/kimi-core-client";
+import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
 
 // Grow a textarea to fit its content, capped at maxPx px.
@@ -42,6 +42,7 @@ type ChatMessage = {
   tools?: ToolEvent[]; // MCP tool 调用记录
   cost?: { inTok: number; outTok: number }; // token usage from the LLM response (browser-direct; USD unknown — endpoint/model price varies)
   ts: string; // ISO
+  coreId?: string; // kimi-core CHAT event id (core mode) — lets retry delete the exact row cross-device
 };
 
 type ChatTheme = "day" | "night";
@@ -61,14 +62,17 @@ type SessionState = {
 // role+content, and keep any trailing local msgs newer than the newest core row.
 function mergeCoreRows(
   local: ChatMessage[],
-  rows: { role: "user" | "assistant"; text: string; at: string }[],
+  rows: { id: string; role: "user" | "assistant"; text: string; at: string }[],
 ): ChatMessage[] {
-  const merged: ChatMessage[] = rows.map((r, i) => {
+  const merged: ChatMessage[] = rows.map((r) => {
+    // Re-attach local-only fields: match the already-synced row by its stable core id,
+    // else (a local msg that hasn't been tagged with a coreId yet) by role+content.
     const prior = local.find(
-      (m) => m.role === r.role && m.content === r.text,
+      (m) => (m.coreId && m.coreId === r.id) || (m.role === r.role && m.content === r.text),
     );
     return {
-      id: `core-${i}-${r.at}`,
+      id: `core-${r.id}`, // stable across rehydrates (was index-based, which shifted on every merge)
+      coreId: r.id,
       role: r.role,
       content: r.text,
       ts: r.at,
@@ -446,7 +450,16 @@ export function ChatRoom() {
       // the focus/visibility refresh bails (see its guard), so this closes the
       // window where a refresh could read core (without this reply yet) and drop
       // the just-rendered message. writeCoreChat swallows its own errors.
-      if (r.text?.trim()) await writeCoreChat("assistant", r.text.trim(), threadId);
+      if (r.text?.trim()) {
+        const coreId = await writeCoreChat("assistant", r.text.trim(), threadId);
+        // tag the just-rendered reply with its core row id so retryLast can delete it
+        if (coreId) {
+          setSession((s) => ({
+            ...s,
+            msgs: s.msgs.map((m) => (m.id === replyId ? { ...m, coreId } : m)),
+          }));
+        }
+      }
     } catch (e) {
       console.error("[chat:llm]", e);
       const fe = friendlyLLMError(e);
@@ -500,17 +513,16 @@ export function ChatRoom() {
   async function retryLast() {
     if (busy) return;
     // 删掉最后一条 assistant, 用其前的 history (含最后一条 user) 重 fire.
-    // NOTE (core mode): this drops the stale reply from LOCAL state only. The
-    // original was already persisted to core by the first streamReply, and core
-    // has no chat_delete tool, so the orphan stays in the cross-device timeline
-    // and the retry appends a second assistant row. mergeCoreRows dedupes
-    // identical role+content on read, but two DIFFERENT replies will both show on
-    // another device until a core-side delete/tombstone exists. See concerns.
+    // Core mode: also delete the stale reply's row in kimi-core (by its coreId) so the
+    // bad answer doesn't linger in the cross-device timeline / digest, and the retry
+    // replaces it instead of appending a second reply other devices keep seeing.
     const lastAssistantIdx = [...session.msgs]
       .reverse()
       .findIndex((m) => m.role === "assistant");
     if (lastAssistantIdx === -1) return;
     const removeAt = session.msgs.length - 1 - lastAssistantIdx;
+    const staleCoreId = session.msgs[removeAt]?.coreId;
+    if (staleCoreId) void deleteCoreChat(staleCoreId);
     const historyMsgs = session.msgs.slice(0, removeAt);
     if (!historyMsgs.length) return;
 

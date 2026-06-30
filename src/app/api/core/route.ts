@@ -29,6 +29,7 @@ const ALLOWED_TOOLS = new Set([
   "chat_read",
   "chat_write",
   "chat_threads",
+  "chat_delete",
   "paper_list",
   "store",
 ]);
