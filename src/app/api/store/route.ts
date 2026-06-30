@@ -153,15 +153,30 @@ export async function POST(req: Request) {
         const prev = entry.id
           ? await prisma.storeRow.findUnique({ where: { id: entry.id } })
           : null;
-        const existing =
-          prev && prev.collection === collection
-            ? rowToEntry<StoreEntry>(toStoreRow(prev))
-            : null;
+        // Row identity is (collection, id), but the table is keyed by id alone, so
+        // upsert would UPDATE a row found by id even if it lives in another
+        // collection — silently re-homing it. Reject a cross-collection id clash
+        // (reachable via import / caller-supplied ids) instead of overwriting.
+        if (prev && prev.collection !== collection) {
+          return NextResponse.json(
+            { error: "id already exists in another collection" },
+            { status: 409 },
+          );
+        }
+        const existing = prev
+          ? rowToEntry<StoreEntry>(toStoreRow(prev))
+          : null;
         const merged = mergeEntry<StoreEntry>(existing, entry, nowISO());
         await upsertRow(prisma, entryToRow(collection, merged));
         return NextResponse.json({ result: merged });
       }
       case "delete": {
+        // Require an explicit id: Prisma strips `undefined` from a where clause,
+        // so an omitted id would collapse to deleteMany({ collection }) and wipe
+        // the WHOLE collection. Intentional mass-delete has its own `empty` op.
+        if (!body.id) {
+          return NextResponse.json({ error: "missing id" }, { status: 400 });
+        }
         await prisma.storeRow.deleteMany({ where: { id: body.id, collection } });
         return NextResponse.json({ result: null });
       }
@@ -188,6 +203,19 @@ export async function POST(req: Request) {
         if (!body.blob) {
           return NextResponse.json({ error: "missing blob" }, { status: 400 });
         }
+        // Same (collection,id) identity guard as `put`: a caller-supplied blob id
+        // that collides with a non-blob row would re-home it on upsert. Reject.
+        if (body.blob.id) {
+          const prev = await prisma.storeRow.findUnique({
+            where: { id: body.blob.id },
+          });
+          if (prev && prev.collection !== "blob") {
+            return NextResponse.json(
+              { error: "id already exists in another collection" },
+              { status: 409 },
+            );
+          }
+        }
         const full: BlobEntry = {
           id: body.blob.id ?? newId(),
           kind: body.blob.kind,
@@ -199,6 +227,11 @@ export async function POST(req: Request) {
         return NextResponse.json({ result: full });
       }
       case "blobDelete": {
+        // Same undefined-strips-filter footgun as `delete`: require an explicit
+        // id so a missing id can't wipe every blob row.
+        if (!body.id) {
+          return NextResponse.json({ error: "missing id" }, { status: 400 });
+        }
         await prisma.storeRow.deleteMany({
           where: { id: body.id, collection: "blob" },
         });

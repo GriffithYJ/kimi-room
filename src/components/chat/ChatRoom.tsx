@@ -52,6 +52,45 @@ type SessionState = {
   msgs: ChatMessage[];
 };
 
+// Merge core-sourced rows into the local timeline instead of wholesale-replacing
+// it. Two things the old "replace with core rows" lost: (1) per-reply local-only
+// fields (cost / thinking / tools) that core's CoreChatMsg doesn't carry, and
+// (2) optimistic local messages not yet synced to core (e.g. a reply whose
+// fire-and-forget write is still in flight). We rebuild from core rows (the
+// cross-device source of truth) but re-attach local-only fields by matching
+// role+content, and keep any trailing local msgs newer than the newest core row.
+function mergeCoreRows(
+  local: ChatMessage[],
+  rows: { role: "user" | "assistant"; text: string; at: string }[],
+): ChatMessage[] {
+  const merged: ChatMessage[] = rows.map((r, i) => {
+    const prior = local.find(
+      (m) => m.role === r.role && m.content === r.text,
+    );
+    return {
+      id: `core-${i}-${r.at}`,
+      role: r.role,
+      content: r.text,
+      ts: r.at,
+      ...(prior?.thinking ? { thinking: prior.thinking } : {}),
+      ...(prior?.tools ? { tools: prior.tools } : {}),
+      ...(prior?.cost ? { cost: prior.cost } : {}),
+    };
+  });
+  // Preserve unsynced optimistic messages: any local msg newer than the newest
+  // core row (its write may still be in flight) that isn't already represented.
+  const newestCoreAt = rows.length ? rows[rows.length - 1].at : "";
+  for (const m of local) {
+    if (
+      m.ts > newestCoreAt &&
+      !merged.some((x) => x.role === m.role && x.content === m.content)
+    ) {
+      merged.push(m);
+    }
+  }
+  return merged;
+}
+
 // ============================================
 // theme tokens
 // ============================================
@@ -220,11 +259,17 @@ export function ChatRoom() {
         //   • device-local last   — read localStorage SESSION_KEY instead (single-device)
         const openThread = (tid: string) =>
           readCoreChat({ threadId: tid, take: 200 }).then((rows) => {
-            setSession({
+            // Merge into local only when staying on the SAME thread (preserves
+            // cost/thinking/tools + unsynced optimistic msgs); switching threads
+            // starts from the core rows alone.
+            setSession((s) => ({
               sessionId: tid,
               startedAt: rows[0]?.at ?? new Date().toISOString(),
-              msgs: rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at })),
-            });
+              msgs:
+                s.sessionId === tid
+                  ? mergeCoreRows(s.msgs, rows)
+                  : rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at })),
+            }));
           });
         if (sessionParam) {
           void openThread(sessionParam).catch(() => {});
@@ -335,7 +380,7 @@ export function ChatRoom() {
           if (!rows.length) return;
           setSession((s) =>
             s.sessionId === tid
-              ? { ...s, msgs: rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at })) }
+              ? { ...s, msgs: mergeCoreRows(s.msgs, rows) }
               : s,
           );
         })
@@ -397,7 +442,11 @@ export function ChatRoom() {
           m.id === replyId ? { ...m, content: text, cost } : m,
         ),
       }));
-      if (r.text?.trim()) void writeCoreChat("assistant", r.text.trim(), threadId);
+      // Await the core persist before `finally` clears busy: while busy is true
+      // the focus/visibility refresh bails (see its guard), so this closes the
+      // window where a refresh could read core (without this reply yet) and drop
+      // the just-rendered message. writeCoreChat swallows its own errors.
+      if (r.text?.trim()) await writeCoreChat("assistant", r.text.trim(), threadId);
     } catch (e) {
       console.error("[chat:llm]", e);
       const fe = friendlyLLMError(e);
@@ -451,6 +500,12 @@ export function ChatRoom() {
   async function retryLast() {
     if (busy) return;
     // 删掉最后一条 assistant, 用其前的 history (含最后一条 user) 重 fire.
+    // NOTE (core mode): this drops the stale reply from LOCAL state only. The
+    // original was already persisted to core by the first streamReply, and core
+    // has no chat_delete tool, so the orphan stays in the cross-device timeline
+    // and the retry appends a second assistant row. mergeCoreRows dedupes
+    // identical role+content on read, but two DIFFERENT replies will both show on
+    // another device until a core-side delete/tombstone exists. See concerns.
     const lastAssistantIdx = [...session.msgs]
       .reverse()
       .findIndex((m) => m.role === "assistant");

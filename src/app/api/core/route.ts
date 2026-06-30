@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { isAuthed } from "@/lib/stores/owner-session";
 
 // Server-side redirect to a running kimi-core MCP gateway.
 //
@@ -14,7 +15,32 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// This route attaches the operator's privileged KIMI_API_KEY and forwards a
+// client-named tool to kimi-core, so it is a trust boundary. Defense in depth:
+// (1) require the owner session cookie (same gate /api/store uses) so an
+// anonymous caller can't reach kimi-core at all, and (2) a hardcoded allowlist
+// of the exact tools the room actually invokes (every callCoreTool call site in
+// src/) — anything else (gmail_read, memory_search full, store{op:"empty"}, …)
+// is rejected before we ever connect, so the browser can't drive destructive or
+// data-exfiltrating tools it never needs.
+const ALLOWED_TOOLS = new Set([
+  "memory_search_safe",
+  "memory_write",
+  "chat_read",
+  "chat_write",
+  "chat_threads",
+  "paper_list",
+  "store",
+]);
+
 export async function POST(req: Request) {
+  if (!isAuthed(req)) {
+    return NextResponse.json(
+      { error: "unauthorized — sign in via POST /api/auth (see docs/SELF-HOST.md)" },
+      { status: 401 },
+    );
+  }
+
   const base = process.env.KIMI_CORE_URL;
   const key = process.env.KIMI_API_KEY;
   if (!base || !key) {
@@ -32,6 +58,11 @@ export async function POST(req: Request) {
   }
   if (!body.name) {
     return NextResponse.json({ error: "missing tool name" }, { status: 400 });
+  }
+  // Reject any tool the room doesn't legitimately call (the proxy holds the
+  // operator's key, so an un-allowlisted name = privileged-tool abuse).
+  if (!ALLOWED_TOOLS.has(body.name)) {
+    return NextResponse.json({ error: "tool not permitted" }, { status: 403 });
   }
 
   const url = new URL(`${base.replace(/\/$/, "")}/mcp`);

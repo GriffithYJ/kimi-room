@@ -268,7 +268,10 @@ function Drawer({ p, theme, P, onClose }: { p: Paper; theme: KimiTheme; P: KimiP
             </>
           )}
 
-          {p.url && (
+          {/* Only render the link for http(s) URLs — paper records can be auto-
+              populated from external sources, so a javascript:/data: url must not
+              become a clickable href that runs in the room's origin. */}
+          {p.url && /^https?:\/\//i.test(p.url) && (
             <a
               href={p.url}
               target="_blank"
