@@ -74,6 +74,7 @@ deploying operator's responsibility; kimi-room does not provide it.
 | ----------------- | ------------------------ | ------------------------------------- |
 | dashboards        | IndexedDB (on device)    | IndexedDB (on device)                 |
 | chat memory       | local worldbook          | kimi-core (`memory_search`)           |
+| chat transcript   | local (IDB / localStorage) | kimi-core (`chat_write`/`chat_read`, synced across devices) |
 | chat model        | operator subscription / API | operator subscription / API (same) |
 | configuration     | none                     | `NEXT_PUBLIC_KIMI_BACKEND=core` + `KIMI_CORE_URL` + `KIMI_API_KEY` |
 | requires a backend | no                      | yes — a running kimi-core             |

@@ -66,6 +66,7 @@ dashboard（日历、睡眠、纪念等）在两种模式下均保留在本地 I
 | -------------- | ------------------------ | ------------------------------------- |
 | dashboard      | IndexedDB（本机）        | IndexedDB（本机）                     |
 | 聊天记忆       | 本地世界书               | kimi-core（`memory_search`）          |
+| 聊天 transcript | 本地（IDB / localStorage） | kimi-core（`chat_write`/`chat_read`，跨设备合并同步） |
 | 聊天模型       | 部署者订阅 / API         | 部署者订阅 / API（相同）              |
 | 配置           | 无                       | `NEXT_PUBLIC_KIMI_BACKEND=core` + `KIMI_CORE_URL` + `KIMI_API_KEY` |
 | 是否需要后端   | 否                       | 是——一个在运行的 kimi-core            |

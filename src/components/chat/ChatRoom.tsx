@@ -7,6 +7,8 @@ import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
+import { readCoreChat, writeCoreChat, readCoreThreads } from "@/lib/kimi-core-client";
+import { isCoreBackend } from "@/lib/backend-mode";
 
 // Grow a textarea to fit its content, capped at maxPx px.
 function useAutoResize(value: string, maxPx = 360) {
@@ -168,6 +170,11 @@ export function ChatRoom() {
   const draftRef = useAutoResize(draft, 360);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // current thread id mirror — lets the focus-refresh handler read it without re-subscribing
+  const threadRef = useRef(session.sessionId);
+  useEffect(() => {
+    threadRef.current = session.sessionId;
+  }, [session.sessionId]);
 
   // load on mount
   useEffect(() => {
@@ -191,6 +198,45 @@ export function ChatRoom() {
           startedAt: new Date().toISOString(),
           msgs: [],
         });
+        return;
+      }
+
+      if (isCoreBackend()) {
+        // core mode: each thread is a conversation in kimi-core (threadId = room
+        // sessionId), merged across this person's devices.
+        //   ?session=X → open that thread       ?new=1 → fresh thread (handled above)
+        //   no param   → open the MOST-RECENT thread (the `else` below)
+        //
+        // Why most-recent (not localStorage device-local, not blank): tuned for the
+        // common personal setup — one person, a phone + a computer — so opening EITHER
+        // device lands on the latest conversation. A device's own localStorage can't
+        // know what the other device just wrote (it would open blank); querying core
+        // does. Assumes a single user (threads are not scoped per account; multi-user
+        // is out of scope, same as the engine).
+        //
+        // ── DEPLOYER KNOB ── to change the no-param default, edit the `else` branch:
+        //   • most-recent thread  — default, below (best for multi-device / one person)
+        //   • always blank / new  — replace its body with: setSession((s) => ({ ...s, msgs: [] }))
+        //   • device-local last   — read localStorage SESSION_KEY instead (single-device)
+        const openThread = (tid: string) =>
+          readCoreChat({ threadId: tid, take: 200 }).then((rows) => {
+            setSession({
+              sessionId: tid,
+              startedAt: rows[0]?.at ?? new Date().toISOString(),
+              msgs: rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at })),
+            });
+          });
+        if (sessionParam) {
+          void openThread(sessionParam).catch(() => {});
+        } else {
+          // no param → open the most-recent thread (see DEPLOYER KNOB above to change)
+          void readCoreThreads({ limit: 1 })
+            .then((ths) => {
+              if (ths[0]) return openThread(ths[0].threadId);
+              setSession((s) => ({ ...s, msgs: [] })); // no threads yet → fresh empty
+            })
+            .catch(() => {});
+        }
         return;
       }
 
@@ -276,6 +322,33 @@ export function ChatRoom() {
     return () => clearTimeout(t);
   }, [session, theme]);
 
+  // core mode: re-hydrate the merged timeline when the window regains focus, so
+  // messages another device sent appear on return. Skipped mid-reply (don't clobber
+  // the in-flight turn) and when the tab is hidden.
+  useEffect(() => {
+    if (!isCoreBackend()) return;
+    function refresh() {
+      if (busy || document.visibilityState === "hidden") return;
+      const tid = threadRef.current;
+      void readCoreChat({ threadId: tid, take: 200 })
+        .then((rows) => {
+          if (!rows.length) return;
+          setSession((s) =>
+            s.sessionId === tid
+              ? { ...s, msgs: rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at })) }
+              : s,
+          );
+        })
+        .catch(() => {});
+    }
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [busy]);
+
   const p = theme === "day" ? DAY : NIGHT;
   const bg = useMemo(() => BG_OPTIONS.find((b) => b.id === bgId) ?? BG_OPTIONS[0], [bgId]);
 
@@ -286,7 +359,7 @@ export function ChatRoom() {
   // V2 · client-side LLM call via lib/llm-client.ts (OpenAI-format chat
   // completion). canon V1 streamed SSE w/ thinking + tool_call/tool_result
   // 事件; V2 简化 non-streaming · 设置 LLM key 在 /settings 后 即可 chat.
-  async function streamReply(msgs: ChatMessage[], replyId: string) {
+  async function streamReply(msgs: ChatMessage[], replyId: string, threadId?: string) {
     if (!isLLMConfigured()) {
       setSession((s) => ({
         ...s,
@@ -324,6 +397,7 @@ export function ChatRoom() {
           m.id === replyId ? { ...m, content: text, cost } : m,
         ),
       }));
+      if (r.text?.trim()) void writeCoreChat("assistant", r.text.trim(), threadId);
     } catch (e) {
       console.error("[chat:llm]", e);
       const fe = friendlyLLMError(e);
@@ -363,7 +437,9 @@ export function ChatRoom() {
     setSession((s) => ({ ...s, msgs: [...nextMsgs, replyMsg] }));
     setDraft("");
     setBusy(true);
-    await streamReply(nextMsgs, replyId);
+    const threadId = session.sessionId;
+    void writeCoreChat("user", text, threadId);
+    await streamReply(nextMsgs, replyId, threadId);
   }
 
   function copyMsg(id: string) {
@@ -392,7 +468,7 @@ export function ChatRoom() {
     };
     setSession((s) => ({ ...s, msgs: [...historyMsgs, replyMsg] }));
     setBusy(true);
-    await streamReply(historyMsgs, replyId);
+    await streamReply(historyMsgs, replyId, session.sessionId);
   }
 
   async function newWindow() {

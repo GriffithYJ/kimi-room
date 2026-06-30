@@ -6,6 +6,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { chatStore, memoryStore } from "@/lib/stores";
+import { isCoreBackend } from "@/lib/backend-mode";
+import { readCoreThreads, type CoreChatThread } from "@/lib/kimi-core-client";
 import {
   friendlyLLMError,
   isLLMConfigured,
@@ -40,6 +42,8 @@ function sessionToText(session: ChatEntry): string {
 
 export default function ChatHistoryPage() {
   const [sessions, setSessions] = useState<ChatEntry[]>([]);
+  const [threads, setThreads] = useState<CoreChatThread[]>([]);
+  const isCore = isCoreBackend();
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; tone: "ok" | "err" } | null>(null);
@@ -51,11 +55,15 @@ export default function ChatHistoryPage() {
   async function load() {
     setLoading(true);
     try {
-      const all = await chatStore().list();
-      const sorted = [...all].sort((a, b) =>
-        b.createdAt.localeCompare(a.createdAt),
-      );
-      setSessions(sorted);
+      if (isCore) {
+        setThreads(await readCoreThreads({ limit: 100 }));
+      } else {
+        const all = await chatStore().list();
+        const sorted = [...all].sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        );
+        setSessions(sorted);
+      }
     } finally {
       setLoading(false);
     }
@@ -137,6 +145,39 @@ export default function ChatHistoryPage() {
 
       {loading ? (
         <div className="text-[11px] italic text-muted-grey/60">loading…</div>
+      ) : isCore ? (
+        threads.length === 0 ? (
+          <div className="text-[11px] italic text-muted-grey/60">
+            还没 thread · 去{" "}
+            <Link href="/chat" className="underline-offset-4 hover:underline">
+              /chat
+            </Link>{" "}
+            开始第一段对话
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {threads.map((t) => (
+              <li
+                key={t.threadId}
+                className="border border-muted-gold/20 rounded p-4 bg-black/20"
+              >
+                <Link
+                  href={`/chat?session=${encodeURIComponent(t.threadId)}`}
+                  className="block group"
+                >
+                  <div className="text-[13px] text-muted-gold/90 truncate group-hover:underline underline-offset-4">
+                    {t.title || "(无标题)"}
+                  </div>
+                  <div className="mt-1 text-[10px] text-muted-grey/60 flex gap-3">
+                    <span>{fmtDate(t.lastAt)}</span>
+                    <span>·</span>
+                    <span>{t.count} 条消息</span>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )
       ) : sessions.length === 0 ? (
         <div className="text-[11px] italic text-muted-grey/60">
           还没 session · 去{" "}
