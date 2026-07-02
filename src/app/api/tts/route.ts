@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isAuthed } from "@/lib/stores/owner-session";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -7,9 +8,10 @@ export const maxDuration = 30;
 // strip markdown / timestamps, then synthesize with ElevenLabs and return
 // audio/mpeg. Bring your own key — ELEVENLABS_API_KEY (+ optional
 // ELEVENLABS_VOICE_ID / ELEVENLABS_MODEL). No key set → 503, and the button just
-// stays quiet. This is a single-user self-host route: it spends YOUR ElevenLabs
-// credits, so keep your deployment private. ElevenLabs is multilingual, so the
-// text is spoken in its original language (no translation step).
+// stays quiet. This route spends YOUR ElevenLabs credits, so it requires the
+// owner session cookie (same gate /api/core and /api/store use) — an anonymous
+// visitor who finds the deployment URL cannot burn quota. ElevenLabs is
+// multilingual, so the text is spoken in its original language (no translation).
 
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY ?? "";
 const ELEVEN_MODEL = process.env.ELEVENLABS_MODEL || "eleven_v3";
@@ -39,6 +41,12 @@ function cleanForTts(raw: string): string {
 }
 
 export async function POST(req: Request) {
+  if (!isAuthed(req)) {
+    return NextResponse.json(
+      { error: "unauthorized — sign in via POST /api/auth (see docs/SELF-HOST.md)" },
+      { status: 401 },
+    );
+  }
   if (!ELEVEN_KEY) {
     return NextResponse.json({ error: "missing_elevenlabs_key" }, { status: 503 });
   }
