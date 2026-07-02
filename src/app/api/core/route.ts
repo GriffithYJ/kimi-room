@@ -38,7 +38,7 @@ const ALLOWED_TOOLS = new Set([
 export async function POST(req: Request) {
   if (!isAuthed(req)) {
     return NextResponse.json(
-      { error: "unauthorized — sign in via POST /api/auth (see docs/SELF-HOST.md)" },
+      { error: "unauthorized — sign in at /backstage/login" },
       { status: 401 },
     );
   }

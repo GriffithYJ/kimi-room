@@ -3,15 +3,22 @@ import {
   SESSION_COOKIE,
   SESSION_MAX_AGE,
   expectedToken,
+  isAuthed,
   verifyPassword,
 } from "@/lib/stores/owner-session";
 
-// Owner sign-in for the Prisma backend. POST { password } → sets the session
-// cookie if it matches KIMI_OWNER_PASSWORD. DELETE → signs out. The cookie is
-// httpOnly (never readable by JS) and Secure in production. See docs/SELF-HOST.md.
+// Owner sign-in for the gated server routes (/api/store, /api/core, /api/tts).
+// POST { password } → sets the session cookie if it matches KIMI_OWNER_PASSWORD.
+// GET → { configured, authed } for the /backstage/login page. DELETE → signs out.
+// The cookie is httpOnly (never readable by JS) and Secure in production.
+// See docs/SELF-HOST.md.
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+export async function GET(req: Request) {
+  return NextResponse.json({ configured: !!expectedToken(), authed: isAuthed(req) });
+}
 
 export async function POST(req: Request) {
   const token = expectedToken();
