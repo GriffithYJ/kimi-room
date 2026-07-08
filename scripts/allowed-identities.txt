@@ -5,3 +5,4 @@ akira\.kimi\.ito@gmail\.com
 [0-9]+\+marikagura@users\.noreply\.github\.com
 marikagura@users\.noreply\.github\.com
 noreply@github\.com
+[0-9]+\+GriffithYJ@users\.noreply\.github\.com

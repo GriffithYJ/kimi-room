@@ -104,7 +104,7 @@ async function upsertRow(prisma: PrismaLike, row: StoreRow): Promise<void> {
 }
 
 export async function POST(req: Request) {
-  if (!isAuthed(req)) {
+  if (!(await isAuthed(req))) {
     return NextResponse.json(
       { error: "unauthorized — sign in at /backstage/login" },
       { status: 401 },

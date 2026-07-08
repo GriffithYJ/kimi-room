@@ -17,11 +17,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
-  return NextResponse.json({ configured: !!expectedToken(), authed: isAuthed(req) });
+  return NextResponse.json({ configured: !!(await expectedToken()), authed: await isAuthed(req) });
 }
 
 export async function POST(req: Request) {
-  const token = expectedToken();
+  const token = await expectedToken();
   if (!token) {
     return NextResponse.json(
       { error: "owner login not configured — set KIMI_OWNER_PASSWORD (see docs/SELF-HOST.md)" },
@@ -37,7 +37,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
 
-  if (!verifyPassword(password)) {
+  if (!(await verifyPassword(password))) {
     return NextResponse.json({ error: "wrong password" }, { status: 401 });
   }
 

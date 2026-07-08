@@ -12,7 +12,7 @@ import { isAuthed } from "@/lib/stores/owner-session";
 // (content:[{type:"text"}]), so we return that text for RAG injection — we do
 // not try to reconstruct structured rows. See docs/BACKENDS.md.
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 // This route attaches the operator's privileged KIMI_API_KEY and forwards a
@@ -36,7 +36,7 @@ const ALLOWED_TOOLS = new Set([
 ]);
 
 export async function POST(req: Request) {
-  if (!isAuthed(req)) {
+  if (!(await isAuthed(req))) {
     return NextResponse.json(
       { error: "unauthorized — sign in at /backstage/login" },
       { status: 401 },
