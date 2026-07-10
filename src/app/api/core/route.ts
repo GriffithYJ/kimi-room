@@ -33,6 +33,8 @@ const ALLOWED_TOOLS = new Set([
   "chat_delete",
   "paper_list",
   "store",
+  "reentry",
+  "reentry_delta",
 ]);
 
 export async function POST(req: Request) {
@@ -52,7 +54,7 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { name?: string; arguments?: Record<string, unknown> };
+  let body: { name?: string; arguments?: Record<string, unknown>; sessionId?: string };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -70,6 +72,7 @@ export async function POST(req: Request) {
   const url = new URL(`${base.replace(/\/$/, "")}/mcp`);
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers: { Authorization: `Bearer ${key}` } },
+    ...(body.sessionId ? { sessionId: body.sessionId } : {}),
   });
   const client = new Client({ name: "kimi-room", version: "0.1.0" });
 
@@ -84,7 +87,10 @@ export async function POST(req: Request) {
       .filter((c) => c?.type === "text" && typeof c.text === "string")
       .map((c) => c.text as string)
       .join("\n");
-    return NextResponse.json({ text });
+    const sessionId = transport.sessionId;
+    const resp = NextResponse.json({ text });
+    if (sessionId) resp.headers.set('x-mcp-session-id', sessionId);
+    return resp;
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   } finally {

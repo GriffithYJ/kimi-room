@@ -7,7 +7,7 @@ import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
-import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat } from "@/lib/kimi-core-client";
+import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
 
 // Grow a textarea to fit its content, capped at maxPx px.
@@ -215,6 +215,8 @@ export function ChatRoom() {
   const scrollRef = useRef<HTMLDivElement>(null);
   // current thread id mirror — lets the focus-refresh handler read it without re-subscribing
   const threadRef = useRef(session.sessionId);
+  const lastReentryRef = useRef(0);
+  const hasReentryRef = useRef(false);
   useEffect(() => {
     threadRef.current = session.sessionId;
   }, [session.sessionId]);
@@ -426,7 +428,30 @@ export function ChatRoom() {
       return;
     }
     try {
-      const sys = await buildSystemMessage();
+      // Core mode: pull global context from kimi-core
+      let reentryCtx = "";
+      if (isCoreBackend()) {
+        const isNewThread = msgs.length === 0;
+        const hoursGap = lastReentryRef.current
+          ? (Date.now() - lastReentryRef.current) / 3600_000
+          : 999;
+        if (isNewThread || !hasReentryRef.current) {
+          reentryCtx = await fetchCoreReentryContext(threadId);
+          if (reentryCtx) {
+            hasReentryRef.current = true;
+            lastReentryRef.current = Date.now();
+          }
+        } else if (hoursGap > 2) {
+          reentryCtx = await fetchCoreReentryDelta(threadId);
+          if (reentryCtx) {
+            lastReentryRef.current = Date.now();
+          }
+        }
+      }
+      let sys = await buildSystemMessage();
+      if (reentryCtx) {
+        sys.text = reentryCtx + (sys.text ? "\n\n---\n\n" + sys.text : "");
+      }
       const llmMsgs: LLMChatMessage[] = [];
       if (sys.text) {
         llmMsgs.push({ role: "system", content: sys.text });

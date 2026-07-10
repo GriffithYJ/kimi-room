@@ -7,6 +7,11 @@ import { isCoreBackend } from "./backend-mode";
 // agent-readable TEXT, not JSON — so these helpers deal in strings, meant for
 // RAG injection into your chat prompt, not for reconstructing structured rows.
 // In "local" mode every helper is a no-op. See docs/BACKENDS.md.
+// Persisted MCP session ID — kept across calls so kimi-core sees the same
+// session for all requests from this browser tab (otherwise the “store” tool
+// scopes data per MCP session and old writes are invisible to new reads).
+let _mcpSessionId: string | undefined;
+
 
 export async function callCoreTool(
   name: string,
@@ -15,13 +20,21 @@ export async function callCoreTool(
   const res = await fetch("/api/core", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, arguments: args }),
+    body: JSON.stringify({
+      name,
+      arguments: args,
+      ...(_mcpSessionId ? { sessionId: _mcpSessionId } : {}),
+    }),
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || `core tool ${name} failed (${res.status})`);
   }
   const data = (await res.json()) as { text?: string };
+  // Persist session ID returned by the server so subsequent requests share
+  // the same MCP session (data written in one request is read by another).
+  const sid = res.headers.get("x-mcp-session-id");
+  if (sid) _mcpSessionId = sid;
   return typeof data.text === "string" ? data.text : "";
 }
 
@@ -128,3 +141,25 @@ export async function readCoreThreads(
     return [];
   }
 }
+// Reentry: pull full global context from kimi-core (reentry) into the system
+// prompt. Pass an optional tag (e.g. sessionId) to isolate the marker chain.
+export async function fetchCoreReentryContext(tag?: string): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("reentry", tag ? { tag } : {});
+  } catch {
+    return "";
+  }
+}
+
+// Incremental reentry: pull context new/updated since the last call. Requires
+// a prior reentry (or reentry_delta) with the same tag to establish the anchor.
+export async function fetchCoreReentryDelta(tag?: string): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("reentry_delta", tag ? { tag } : {});
+  } catch {
+    return "";
+  }
+}
+
