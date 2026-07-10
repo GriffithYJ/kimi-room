@@ -12,11 +12,31 @@ import { isCoreBackend } from "./backend-mode";
 // scopes data per MCP session and old writes are invisible to new reads).
 let _mcpSessionId: string | undefined;
 
+// Tool-call observer system - lets the UI show live tool activity during a
+// chat turn. Every callCoreTool call emits "pending" then "done" or "error".
+export type CoreToolCallEvent = {
+  name: string;
+  args?: Record<string, unknown>;
+  status: "pending" | "done" | "error";
+  preview?: string;
+};
+type CoreToolObserver = (ev: CoreToolCallEvent) => void;
+let _toolObservers: CoreToolObserver[] = [];
+export function subscribeCoreToolCalls(fn: CoreToolObserver): () => void {
+  _toolObservers.push(fn);
+  return () => {
+    _toolObservers = _toolObservers.filter((x) => x !== fn);
+  };
+}
 
 export async function callCoreTool(
   name: string,
   args: Record<string, unknown> = {},
 ): Promise<string> {
+  // Emit "pending" so the UI can show something before we wait
+  const pending: CoreToolCallEvent = { name, args, status: "pending" };
+  for (const fn of _toolObservers) fn(pending);
+
   const res = await fetch("/api/core", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -28,6 +48,7 @@ export async function callCoreTool(
   });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
+    for (const fn of _toolObservers) fn({ name, status: "error", preview: err.error });
     throw new Error(err.error || `core tool ${name} failed (${res.status})`);
   }
   const data = (await res.json()) as { text?: string };
@@ -35,7 +56,12 @@ export async function callCoreTool(
   // the same MCP session (data written in one request is read by another).
   const sid = res.headers.get("x-mcp-session-id");
   if (sid) _mcpSessionId = sid;
-  return typeof data.text === "string" ? data.text : "";
+  const text = typeof data.text === "string" ? data.text : "";
+  const preview = text.length > 0
+    ? (text.length > 60 ? text.slice(0, 60) + "\u2026" : text)
+    : undefined;
+  for (const fn of _toolObservers) fn({ name, status: "done", preview });
+  return text;
 }
 
 // RAG: pull memory context from kimi-core to prepend to a chat turn. Uses the

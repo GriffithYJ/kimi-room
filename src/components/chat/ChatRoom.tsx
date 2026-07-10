@@ -7,8 +7,9 @@ import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
-import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta } from "@/lib/kimi-core-client";
+import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
+import { getRandomToolText } from "@/lib/tool-texts";
 
 // Grow a textarea to fit its content, capped at maxPx px.
 function useAutoResize(value: string, maxPx = 360) {
@@ -429,6 +430,18 @@ export function ChatRoom() {
     }
     try {
       // Core mode: pull global context from kimi-core
+      const collectedTools: ToolEvent[] = [];
+      let _tc = 0;
+      const unsubTools = subscribeCoreToolCalls((ev) => {
+        const id = "tool-" + (++_tc) + "-" + Date.now();
+        collectedTools.push({ id, name: ev.name, arguments: ev.args ? JSON.stringify(ev.args) : undefined, preview: ev.preview, status: ev.status });
+        setSession((s) => ({
+          ...s,
+          msgs: s.msgs.map((m) =>
+            m.id === replyId ? { ...m, tools: [...collectedTools] } : m,
+          ),
+        }));
+      });
       let reentryCtx = "";
       if (isCoreBackend()) {
         const isNewThread = msgs.length === 0;
@@ -484,6 +497,7 @@ export function ChatRoom() {
             msgs: s.msgs.map((m) => (m.id === replyId ? { ...m, coreId } : m)),
           }));
         }
+        unsubTools();
       }
     } catch (e) {
       console.error("[chat:llm]", e);
@@ -1286,7 +1300,7 @@ function MessageItem({
                   }}
                 >
                   {t.status === "pending" ? "⋯ " : "✓ "}
-                  {t.name}
+                  {getRandomToolText(t.name)}
                   {t.preview ? ` · ${t.preview}` : ""}
                 </button>
                 {expanded && formattedArgs && (
