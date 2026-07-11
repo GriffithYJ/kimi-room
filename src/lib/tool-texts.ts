@@ -5,29 +5,19 @@
 
 const toolTexts: Record<string, string[]> = {
   reentry: [
-    "{{char}}正试着找回时间的裂缝……",
-    "{{char}}在记忆的暗房里冲洗底片……",
-    "{{char}}翻阅着共享的日记本……",
-    "{{char}}在时间线的另一端寻找着什么……",
+    "{{char}}醒来了……",
   ],
   reentry_delta: [
     "{{char}}查看最近发生的变化……",
-    "{{char}}注意到时间线有了新的分支……",
-    "{{char}}轻轻拂去记忆表层的灰尘……",
   ],
   memory_search_safe: [
-    "{{char}}正在回忆关于这部分的情节……",
     "{{char}}在记忆碎片中翻找……",
-    "{{char}}试图拼凑这段记忆……",
-    "{{char}}翻开旧日的记录……",
   ],
   memory_write: [
-    "{{char}}将这段经历折叠收好……",
-    "{{char}}在日记上添了几笔……",
+    "{{char}}记住了……",
   ],
   chat_read: [
     "{{char}}翻阅着过往的对话……",
-    "{{char}}顺着对话的丝线往回走……",
   ],
   chat_write: [
     "{{char}}将此刻装进时间胶囊……",
