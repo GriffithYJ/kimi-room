@@ -297,6 +297,7 @@ export function ChatRoom() {
         const parsed = JSON.parse(ses) as SessionState;
         if (parsed?.msgs?.length) setSession(parsed);
       }
+      }
     } catch {}
   }, [searchParams]);
 
