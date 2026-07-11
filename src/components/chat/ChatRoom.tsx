@@ -493,6 +493,10 @@ export function ChatRoom() {
         }
         currentResult = await llmChat(llmMsgs, { tools: toolDefs, tool_choice: "auto" });
       }
+      // If we exhausted all rounds on tool calls, force one final text-only call
+      if (currentResult.toolCalls?.length) {
+        currentResult = await llmChat(llmMsgs, { tool_choice: "none" });
+      }
       const text = currentResult.text?.trim() || "(空响应)";
       const usage = (currentResult.raw as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage;
       const cost = usage
