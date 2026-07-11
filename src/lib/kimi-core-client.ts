@@ -19,6 +19,7 @@ export type CoreToolCallEvent = {
   args?: Record<string, unknown>;
   status: "pending" | "done" | "error";
   preview?: string;
+  result?: string;
 };
 type CoreToolObserver = (ev: CoreToolCallEvent) => void;
 let _toolObservers: CoreToolObserver[] = [];
@@ -60,7 +61,7 @@ export async function callCoreTool(
   const preview = text.length > 0
     ? (text.length > 60 ? text.slice(0, 60) + "\u2026" : text)
     : undefined;
-  for (const fn of _toolObservers) fn({ name, status: "done", preview });
+  for (const fn of _toolObservers) fn({ name, status: "done", preview, result: text });
   return text;
 }
 

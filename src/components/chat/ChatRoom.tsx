@@ -31,6 +31,7 @@ type ToolEvent = {
   name: string;
   label: string;
   arguments?: string;
+  result?: string; // full tool output text
   preview?: string; // result preview "5 条" / "未找到" 等
   status: "pending" | "done" | "error";
 };
@@ -388,7 +389,7 @@ export function ChatRoom() {
       let _tc = 0;
       const unsubTools = subscribeCoreToolCalls((ev) => {
         const id = "tool-" + (++_tc) + "-" + Date.now();
-        collectedTools.push({ id, name: ev.name, label: getRandomToolText(ev.name), arguments: ev.args ? JSON.stringify(ev.args) : undefined, preview: ev.preview, status: ev.status });
+        collectedTools.push({ id, name: ev.name, label: getRandomToolText(ev.name), arguments: ev.args ? JSON.stringify(ev.args) : undefined, result: ev.result, preview: ev.preview, status: ev.status });
         setSession((s) => ({
           ...s,
           msgs: s.msgs.map((m) =>
@@ -1249,7 +1250,7 @@ function MessageItem({
                   {t.status === "pending" ? "⋯ " : "✓ "}
                   {t.label}
                 </button>
-                {(expanded && (formattedArgs || t.preview)) && (
+                {(expanded && (formattedArgs || t.preview || t.result)) && (
                   <div
                     style={{
                       marginTop: 4,
@@ -1266,9 +1267,9 @@ function MessageItem({
                       textAlign: "left",
                     }}
                   >
-                    {t.preview && (
+                    {(t.result || t.preview) && (
                       <div style={{ marginBottom: formattedArgs ? 6 : 0, opacity: 0.85 }}>
-                        {"→"} {t.preview}
+                        {"→"} {t.result ?? t.preview}
                       </div>
                     )}
                     {formattedArgs && (
