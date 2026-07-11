@@ -504,7 +504,7 @@ export function ChatRoom() {
         : undefined;
       // Sentence-by-sentence progressive rendering
       const sentences = splitSentences(text);
-      if (sentences.length > 1 && text !== "(???)") {
+      if (sentences.length > 1 && text !== "(空响应)") {
         for (let i = 0; i < sentences.length; i++) {
           setSession((s) => ({
             ...s,
@@ -1199,7 +1199,7 @@ function renderEmphasis(text: string): ReactNode {
   return nodes.length > 0 ? nodes : text;
 }
 
-// Split text into sentences for progressive rendering (???.!?\n delimiters, kept with sentence)
+// Split text into sentences for progressive rendering (。！？.!?\n delimiters, kept with sentence)
 function splitSentences(text: string): string[] {
   if (!text) return [""];
   const parts = text.split(/(?<=[。！？.!?\n])/);
