@@ -297,29 +297,39 @@ export function ChatRoom() {
         const parsed = JSON.parse(ses) as SessionState;
         if (parsed?.msgs?.length) setSession(parsed);
       }
-    } catch (_) {}
+    } catch (e) {
+      // noop
+    }
   }, [searchParams]);
 
   // persist
   useEffect(() => {
     try {
       localStorage.setItem(HEADER_LABEL_KEY, headerLabel);
-    } catch (_) {}
+    } catch (e) {
+      // noop
+    }
   }, [headerLabel]);
   useEffect(() => {
     try {
       localStorage.setItem(THEME_KEY, theme);
-    } catch (_) {}
+    } catch (e) {
+      // noop
+    }
   }, [theme]);
   useEffect(() => {
     try {
       localStorage.setItem(BG_KEY, bgId);
-    } catch (_) {}
+    } catch (e) {
+      // noop
+    }
   }, [bgId]);
   useEffect(() => {
     try {
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    } catch (_) {}
+    } catch (e) {
+      // noop
+    }
     // scroll to bottom on new message
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
