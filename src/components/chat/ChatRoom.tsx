@@ -7,7 +7,7 @@ import { EmptyRose } from "@/components/EmptyRose";
 import { chatStore, memoryStore } from "@/lib/stores";
 import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
-import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
+import { callCoreTool, readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
 import { getRandomToolText } from "@/lib/tool-texts";
 
@@ -496,6 +496,15 @@ export function ChatRoom() {
             ...s,
             msgs: s.msgs.map((m) => (m.id === replyId ? { ...m, coreId } : m)),
           }));
+        }
+        // Fire-and-forget: let kimi-core analyze this exchange for state/event recording
+        const lastMsg = msgs[msgs.length - 1];
+        if (lastMsg?.role === "user") {
+          callCoreTool("chat_postprocess", {
+            threadId: threadId || session.sessionId,
+            userMessage: lastMsg.content,
+            assistantMessage: r.text,
+          }).catch(() => {});
         }
         unsubTools();
       }

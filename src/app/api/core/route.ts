@@ -35,6 +35,7 @@ const ALLOWED_TOOLS = new Set([
   "store",
   "reentry",
   "reentry_delta",
+  "chat_postprocess",
 ]);
 
 export async function POST(req: Request) {
