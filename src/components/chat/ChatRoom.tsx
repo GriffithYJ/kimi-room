@@ -1452,7 +1452,7 @@ function MessageItem({
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
             textAlign: "left",
-            // user CC 风气泡(右), assistant 纯文本无气泡; 气泡内文字一律左对齐
+            // user 气泡(右), assistant 气泡(左); 气泡内文字一律左对齐
             ...(isUser
               ? {
                   color: p.ink,
@@ -1460,7 +1460,12 @@ function MessageItem({
                   padding: "10px 14px",
                   borderRadius: 18,
                 }
-              : {}),
+              : {
+                  color: p.ink,
+                  background: p.bubbleBg,
+                  padding: "10px 14px",
+                  borderRadius: 18,
+                }),
           }}
         >
           {msg.content ? (
