@@ -1319,6 +1319,7 @@ function MessageItem({
             })();
             return (
               <div key={t.id} style={{ padding: "1px 0" }}>
+                <div style={{ position: "sticky", top: 0, zIndex: 1, background: p.bg }}>
                 <button
                   type="button"
                   onClick={() =>
@@ -1347,6 +1348,7 @@ function MessageItem({
                   {t.status === "pending" ? "⋯ " : "✓ "}
                   {t.label}
                 </button>
+                </div>
                 {(expanded && (formattedArgs || t.preview || t.result)) && (
                   <div
                     style={{
