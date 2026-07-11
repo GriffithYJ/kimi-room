@@ -1589,7 +1589,7 @@ function MessageItem({
         localStorage.setItem(SESSION_KEY, JSON.stringify(session));
       }
       firstMountRef.current = false;
-    } catch {} finally {
+    } catch (e) { /* ignore */ } finally {
       // scroll to bottom on new message
       scrollRef.current?.scrollTop = scrollRef.current?.scrollHeight ?? 0;
     }
