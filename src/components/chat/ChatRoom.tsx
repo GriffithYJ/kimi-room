@@ -502,12 +502,36 @@ export function ChatRoom() {
       const cost = usage
         ? { inTok: usage.prompt_tokens ?? 0, outTok: usage.completion_tokens ?? 0 }
         : undefined;
-      setSession((s) => ({
-        ...s,
-        msgs: s.msgs.map((m) =>
-          m.id === replyId ? { ...m, content: text, cost } : m,
-        ),
-      }));
+      // Sentence-by-sentence progressive rendering
+      const sentences = splitSentences(text);
+      if (sentences.length > 1 && text !== "(???)") {
+        for (let i = 0; i < sentences.length; i++) {
+          setSession((s) => ({
+            ...s,
+            msgs: s.msgs.map((m) =>
+              m.id === replyId
+                ? { ...m, content: sentences.slice(0, i + 1).join("") }
+                : m,
+            ),
+          }));
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        // All sentences shown — now attach cost
+        setSession((s) => ({
+          ...s,
+          msgs: s.msgs.map((m) =>
+            m.id === replyId ? { ...m, cost } : m,
+          ),
+        }));
+      } else {
+        setSession((s) => ({
+          ...s,
+          msgs: s.msgs.map((m) =>
+            m.id === replyId ? { ...m, content: text, cost } : m,
+          ),
+        }));
+      }
+
       // Await the core persist before `finally` clears busy: while busy is true
       // the focus/visibility refresh bails (see its guard), so this closes the
       // window where a refresh could read core (without this reply yet) and drop
@@ -1174,6 +1198,14 @@ function renderEmphasis(text: string): ReactNode {
   if (last < text.length) nodes.push(text.slice(last));
   return nodes.length > 0 ? nodes : text;
 }
+
+// Split text into sentences for progressive rendering (???.!?\n delimiters, kept with sentence)
+function splitSentences(text: string): string[] {
+  if (!text) return [""];
+  const parts = text.split(/(?<=[。！？.!?\n])/);
+  return parts.filter((s) => s.trim().length > 0);
+}
+
 
 function MessageItem({
   msg,
