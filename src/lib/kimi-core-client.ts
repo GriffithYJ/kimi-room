@@ -556,3 +556,45 @@ export async function deleteCoreCalendarEntry(date: string): Promise<boolean> {
     return false;
   }
 }
+
+
+
+// ====== Settings sync ======
+// Persist backstage settings to kimi-core via state store so users don't
+// re-enter LLM config, names, etc. on each device.
+
+export async function saveSettingsToCore(
+  settings: Record<string, string>,
+): Promise<boolean> {
+  if (!isCoreBackend()) return false;
+  try {
+    await callCoreTool(state_set, {
+      key: kimi_room_settings,
+      value: JSON.stringify(settings),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadSettingsFromCore(): Promise<Record<string, string> | null> {
+  if (!isCoreBackend()) return null;
+  try {
+    const text = await callCoreTool(state_get, { key: kimi_room_settings });
+    if (!text || text === null || text === undefined) return null;
+    // state_get returns one of:
+    //   { key: ..., value: {...} }  (wrapped object)
+    //   {...}                          (direct JSON string)
+    //   { ... }                          (already parsed)
+    const parsed = JSON.parse(text);
+    if (typeof parsed === object && parsed !== null) {
+      const raw = (parsed as Record<string, unknown>).value ?? parsed;
+      if (typeof raw === string) return JSON.parse(raw) as Record<string, string>;
+      return raw as Record<string, string>;
+    }
+    return typeof parsed === string ? (JSON.parse(parsed) as Record<string, string>) : null;
+  } catch {
+    return null;
+  }
+}

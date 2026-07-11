@@ -27,6 +27,8 @@ import {
   setSelfPortrait,
 } from "@/lib/portrait-store";
 import { isDemoOn, removeDemo, seedDemo } from "@/lib/demo-seed";
+import { saveSettingsToCore, loadSettingsFromCore } from "@/lib/kimi-core-client";
+import { isCoreBackend } from "@/lib/backend-mode";
 import {
   CHAR_NAME_DEFAULT,
   getCharName,
@@ -82,6 +84,25 @@ export default function SettingsPage() {
     setMeds(loadMedButtons());
     setDemoOn(isDemoOn());
     refreshPortraits();
+    // Load settings from kimi-core (overrides localStorage for cross-device sync)
+    if (isCoreBackend()) {
+      loadSettingsFromCore().then((coreSettings) => {
+        if (coreSettings) {
+          if (coreSettings.title) setTitle(coreSettings.title);
+          if (coreSettings.charName) setCharNameState(coreSettings.charName);
+          if (coreSettings.userName) setUserNameState(coreSettings.userName);
+          setLLM((prev) => ({
+            ...prev,
+            apiKey: coreSettings.apiKey ?? prev.apiKey,
+            endpoint: coreSettings.endpoint ?? prev.endpoint,
+            model: coreSettings.model ?? prev.model,
+            maxContextMessages: coreSettings.maxContextMessages
+              ? parseInt(coreSettings.maxContextMessages, 10) || prev.maxContextMessages
+              : prev.maxContextMessages,
+          }));
+        }
+      });
+    }
   }, []);
 
   function addMed() {

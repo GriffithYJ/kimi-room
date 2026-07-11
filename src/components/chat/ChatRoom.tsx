@@ -234,7 +234,7 @@ export function ChatRoom() {
   // current thread id mirror — lets the focus-refresh handler read it without re-subscribing
   const threadRef = useRef(session.sessionId);
   const lastReentryRef = useRef(0);
-  const hasReentryRef = useRef(false);
+ const hasReentryRef = useRef(false);
   useEffect(() => {
     threadRef.current = session.sessionId;
   }, [session.sessionId]);
@@ -348,13 +348,13 @@ export function ChatRoom() {
   }, [bgId]);
   useEffect(() => {
     try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    } catch {}
-    // scroll to bottom on new message
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [session]);
+     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+   } catch {}
+   // scroll to bottom on new message
+   if (scrollRef.current) {
+     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+   }
+ }, [session]);
 
   // core mode: re-hydrate the merged timeline when the window regains focus, so
   // messages another device sent appear on return. Skipped mid-reply (don't clobber
@@ -1578,3 +1578,19 @@ function MessageItem({
   );
 }
 
+  const hasReentryRef = useRef(false); const firstMountRef = useRef(true);
+      // ═══ CRITICAL: skip persist on first mount ═══
+      // On mount the session is the initial state (msgs: []). If we persist it
+      // here we overwrite the localStorage record left by the PREVIOUS visit,
+      // which carries per-message fields (tools, coreId, cost, thinking) that
+      // openThread → mergeCoreRows reads back to re-attach to core-sourced rows.
+      // Without this guard those local-only fields are lost on every navigation.
+      if (!firstMountRef.current) {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      }
+      firstMountRef.current = false;
+    } catch {} finally {
+      // scroll to bottom on new message
+      scrollRef.current?.scrollTop = scrollRef.current?.scrollHeight ?? 0;
+    }
+  }, [session]);
