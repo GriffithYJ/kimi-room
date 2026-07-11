@@ -1312,27 +1312,46 @@ function MessageItem({
                 >
                   {t.status === "pending" ? "⋯ " : "✓ "}
                   {t.label}
-                  {t.preview ? ` · ${t.preview}` : ""}
                 </button>
-                {expanded && formattedArgs && (
-                  <pre
+                {(expanded && (formattedArgs || t.preview)) && (
+                  <div
                     style={{
                       marginTop: 4,
-                      marginLeft: 16,
-                      paddingLeft: 8,
-                      borderLeft: `2px solid ${p.hairline}`,
+                      padding: "6px 10px",
+                      borderRadius: 6,
+                      background: "rgba(255,255,255,0.04)",
+                      border: `1px solid ${p.hairline}`,
                       fontSize: 11,
                       lineHeight: 1.55,
                       color: p.inkSoft,
-                      fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, monospace",
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                       whiteSpace: "pre-wrap",
                       wordBreak: "break-word",
-                      opacity: 0.85,
+                      textAlign: "left",
                     }}
                   >
-                    {formattedArgs}
-                  </pre>
+                    {t.preview && (
+                      <div style={{ marginBottom: formattedArgs ? 6 : 0, opacity: 0.85 }}>
+                        {"→"} {t.preview}
+                      </div>
+                    )}
+                    {formattedArgs && (
+                      <pre
+                        style={{
+                          margin: 0,
+                          fontSize: 11,
+                          lineHeight: 1.55,
+                          color: p.inkSoft,
+                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          opacity: 0.85,
+                        }}
+                      >
+                        {formattedArgs}
+                      </pre>
+                    )}
+                  </div>
                 )}
               </div>
             );
