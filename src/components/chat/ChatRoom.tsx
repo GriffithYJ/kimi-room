@@ -297,39 +297,29 @@ export function ChatRoom() {
         const parsed = JSON.parse(ses) as SessionState;
         if (parsed?.msgs?.length) setSession(parsed);
       }
-    } catch (e) {
-      // noop
-    }
+    } catch {}
   }, [searchParams]);
 
   // persist
   useEffect(() => {
     try {
       localStorage.setItem(HEADER_LABEL_KEY, headerLabel);
-    } catch (e) {
-      // noop
-    }
+    } catch {}
   }, [headerLabel]);
   useEffect(() => {
     try {
       localStorage.setItem(THEME_KEY, theme);
-    } catch (e) {
-      // noop
-    }
+    } catch {}
   }, [theme]);
   useEffect(() => {
     try {
       localStorage.setItem(BG_KEY, bgId);
-    } catch (e) {
-      // noop
-    }
+    } catch {}
   }, [bgId]);
   useEffect(() => {
     try {
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    } catch (e) {
-      // noop
-    }
+    } catch {}
     // scroll to bottom on new message
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -584,7 +574,7 @@ export function ChatRoom() {
             { temperature: 0.3, maxTokens: 100 },
           );
           title = summary.trim().split("\n")[0].slice(0, 80) || null;
-        } catch (e) {
+        } catch {
           // 总结失败 fall through · 直接 close window 不 memory
         }
       }
@@ -1149,7 +1139,7 @@ function MessageItem({
       const hh = String(j.getUTCHours()).padStart(2, "0");
       const mm = String(j.getUTCMinutes()).padStart(2, "0");
       return `${m}.${day} ${hh}:${mm}`;
-    } catch (e) {
+    } catch {
       return "";
     }
   }, [msg.ts]);
@@ -1190,7 +1180,7 @@ function MessageItem({
       audio.onerror = () => setPlayState("error");
       setPlayState("playing");
       await audio.play();
-    } catch (e) {
+    } catch {
       setPlayState("error");
     }
   }
@@ -1225,7 +1215,7 @@ function MessageItem({
               if (!t.arguments) return null;
               try {
                 return JSON.stringify(JSON.parse(t.arguments), null, 2);
-              } catch (e) {
+              } catch {
                 return t.arguments;
               }
             })();
