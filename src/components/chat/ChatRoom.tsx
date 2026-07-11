@@ -9,7 +9,7 @@ import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessa
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
 import { callCoreTool, readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
-import { getRandomToolText } from "@/lib/tool-texts";
+import { getToolLabel } from "@/lib/tool-texts";
 
 // Grow a textarea to fit its content, capped at maxPx px.
 function useAutoResize(value: string, maxPx = 360) {
@@ -30,6 +30,7 @@ function useAutoResize(value: string, maxPx = 360) {
 type ToolEvent = {
   id: string;
   name: string;
+  label: string;
   arguments?: string;
   preview?: string; // result preview "5 条" / "未找到" 等
   status: "pending" | "done" | "error";
@@ -434,7 +435,7 @@ export function ChatRoom() {
       let _tc = 0;
       const unsubTools = subscribeCoreToolCalls((ev) => {
         const id = "tool-" + (++_tc) + "-" + Date.now();
-        collectedTools.push({ id, name: ev.name, arguments: ev.args ? JSON.stringify(ev.args) : undefined, preview: ev.preview, status: ev.status });
+        collectedTools.push({ id, name: ev.name, label: getToolLabel(ev.name), arguments: ev.args ? JSON.stringify(ev.args) : undefined, preview: ev.preview, status: ev.status });
         setSession((s) => ({
           ...s,
           msgs: s.msgs.map((m) =>
@@ -1271,7 +1272,7 @@ function MessageItem({
       {/* tool calls — assistant only. 默认 inline 简洁 (name + preview),
           点击 expand 显示 args JSON. */}
       {!isUser && msg.tools && msg.tools.length > 0 && (
-        <div style={{ marginBottom: 6 }}>
+        <div style={{ marginBottom: 6, textAlign: "center" }}>
           {msg.tools.map((t) => {
             const expanded = expandedTools.has(t.id);
             const formattedArgs = (() => {
@@ -1298,6 +1299,8 @@ function MessageItem({
                     fontSize: 11,
                     letterSpacing: 0.5,
                     color: p.inkMute,
+                    textAlign: "center",
+                    width: "100%",
                     fontStyle: "italic",
                     fontFamily: FONT_STACK,
                     lineHeight: 1.5,
@@ -1305,11 +1308,10 @@ function MessageItem({
                     background: "transparent",
                     border: "none",
                     cursor: "pointer",
-                    textAlign: "left",
                   }}
                 >
                   {t.status === "pending" ? "⋯ " : "✓ "}
-                  {getRandomToolText(t.name)}
+                  {t.label}
                   {t.preview ? ` · ${t.preview}` : ""}
                 </button>
                 {expanded && formattedArgs && (
