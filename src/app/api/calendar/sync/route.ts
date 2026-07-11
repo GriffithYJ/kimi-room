@@ -20,7 +20,6 @@
 //   { "date": "2026-07-11 14:00", "event": "开会" }
 //   → stored as date=2026-07-11, event="14:00 开会"
 
-export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
