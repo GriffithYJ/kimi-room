@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EmptyRose } from "@/components/EmptyRose";
-import { chatStore, memoryStore } from "@/lib/stores";
-import { friendlyLLMError, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
+import { friendlyLLMError, getLLMConfig, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
 import { callCoreTool, readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
@@ -194,11 +193,9 @@ export function ChatRoom() {
   const [showBgPicker, setShowBgPicker] = useState(false);
   const [sysStats, setSysStats] = useState<{
     spChars: number;
-    memInjectOn: boolean;
-    memTotalActive: number;
   } | null>(null);
 
-  // Load sys-prompt + memory stats when drawer opens (re-fetch each time
+  // Load sys-prompt stats when drawer opens (re-fetch each time
   // so user sees fresh count after editing /backstage/character + returning).
   useEffect(() => {
     if (!showBgPicker) return;
@@ -294,27 +291,6 @@ export function ChatRoom() {
       }
 
       if (sessionParam) {
-        // V2 · resume session from ChatStore IDB (canon V1 走 /api/chat/sessions)
-        void chatStore()
-          .get(sessionParam)
-          .then((d) => {
-            if (!d) return;
-            const msgs: ChatMessage[] = d.messages.map((m, i) => ({
-              id: `m-${i}-${d.id}`,
-              role: m.role,
-              content: m.content,
-              ts: m.ts ?? d.createdAt,
-            }));
-            setSession({
-              sessionId: d.id,
-              startedAt: d.createdAt,
-              msgs,
-            });
-          })
-          .catch(() => {});
-        return;
-      }
-
       // default: resume from localStorage
       const ses = localStorage.getItem(SESSION_KEY);
       if (ses) {
@@ -349,31 +325,6 @@ export function ChatRoom() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [session]);
-
-  // V2 · auto-backup chat session to ChatStore IDB (canon V1 → /api/chat/backup
-  // pwa_kv). Debounced 2s after last change. 走 settings export JSON 跨 device
-  // migrate.
-  useEffect(() => {
-    if (session.msgs.length === 0) return;
-    const t = setTimeout(() => {
-      const firstUser = session.msgs.find((m) => m.role === "user");
-      void chatStore()
-        .put({
-          id: session.sessionId,
-          source: "cc-chat",
-          title: firstUser ? firstUser.content.slice(0, 60) : null,
-          messages: session.msgs.map((m) => ({
-            role: m.role,
-            content: m.content,
-            ts: m.ts,
-          })),
-          note: null,
-          theme,
-        })
-        .catch(() => {});
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [session, theme]);
 
   // core mode: re-hydrate the merged timeline when the window regains focus, so
   // messages another device sent appear on return. Skipped mid-reply (don't clobber
@@ -431,6 +382,7 @@ export function ChatRoom() {
     }
     try {
       // Core mode: pull global context from kimi-core
+      const cfg = getLLMConfig();
       const collectedTools: ToolEvent[] = [];
       let _tc = 0;
       const unsubTools = subscribeCoreToolCalls((ev) => {
@@ -466,11 +418,15 @@ export function ChatRoom() {
       if (reentryCtx) {
         sys.text = reentryCtx + (sys.text ? "\n\n---\n\n" + sys.text : "");
       }
+      // Apply context length limit: keep the SP/reentry system message intact,
+      // but truncate conversation messages to the configured max.
+      const maxMsgs = cfg.maxContextMessages > 0 ? cfg.maxContextMessages : Infinity;
+      const slicedMsgs = msgs.length > maxMsgs ? msgs.slice(msgs.length - maxMsgs) : msgs;
       const llmMsgs: LLMChatMessage[] = [];
       if (sys.text) {
         llmMsgs.push({ role: "system", content: sys.text });
       }
-      for (const m of msgs) {
+      for (const m of slicedMsgs) {
         llmMsgs.push({ role: m.role, content: m.content });
       }
       const r = await llmChat(llmMsgs);
@@ -622,23 +578,6 @@ export function ChatRoom() {
           // 总结失败 fall through · 直接 close window 不 memory
         }
       }
-      if (title) {
-        // 把 closeout 总结存进 memoryStore (canon V1 走 /api/chat/closeout 自动写 memory)
-        await memoryStore().put({
-          key: title,
-          content: session.msgs
-            .map((m) => `[${m.role}] ${m.content}`)
-            .join("\n\n"),
-          order: 0,
-          active: true,
-          tags: ["chat-closeout"],
-          reviewStatus: "pending",
-        });
-      }
-      // 删 旧 session ChatStore record · 起新
-      try {
-        await chatStore().delete(session.sessionId);
-      } catch {}
       const fresh: SessionState = {
         sessionId: `session-${Date.now()}`,
         startedAt: new Date().toISOString(),
@@ -967,10 +906,7 @@ export function ChatRoom() {
             {sysStats ? (
               <>
                 <div>
-                  SP {sysStats.spChars} 字 ·{" "}
-                  {sysStats.memInjectOn
-                    ? `${sysStats.memTotalActive} 条 memory 注入`
-                    : "memory 不注入"}
+                  SP {sysStats.spChars} ?
                 </div>
                 <div style={{ marginTop: 4, color: p.inkMute, fontSize: 9, letterSpacing: 1 }}>
                   → /backstage/character

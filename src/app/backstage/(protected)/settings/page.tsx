@@ -65,7 +65,7 @@ export default function SettingsPage() {
   const [title, setTitle] = useState(APP_TITLE_DEFAULT);
   const [charName, setCharNameState] = useState(CHAR_NAME_DEFAULT);
   const [userName, setUserNameState] = useState("you");
-  const [llm, setLLM] = useState<LLMConfig>({ apiKey: "", endpoint: "", model: "" });
+  const [llm, setLLM] = useState<LLMConfig>({ apiKey: "", endpoint: "", model: "", maxContextMessages: 50 });
   const [selfPreview, setSelfPreview] = useState<string | null>(null);
   const [otherPreview, setOtherPreview] = useState<string | null>(null);
   const [meds, setMeds] = useState<MedButton[]>([]);
@@ -269,6 +269,17 @@ export default function SettingsPage() {
               onChange={(e) => setLLM({ ...llm, apiKey: e.target.value })}
               placeholder="sk-…"
               autoComplete="off"
+            className={`${inputCls} font-mono text-sm`}
+          />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={helpCls}>上下文长度 · 读取最近 N 条对话（0=不限）</span>
+            <input
+              type="number"
+              min={0}
+              max={999}
+              value={llm.maxContextMessages}
+              onChange={(e) => setLLM({ ...llm, maxContextMessages: Math.max(0, parseInt(e.target.value, 10) || 0) })}
               className={`${inputCls} font-mono text-sm`}
             />
           </label>

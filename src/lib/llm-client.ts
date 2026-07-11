@@ -15,9 +15,11 @@
 const KEY_API_KEY = "kimi-llm-api-key";
 const KEY_ENDPOINT = "kimi-llm-endpoint";
 const KEY_MODEL = "kimi-llm-model";
+const KEY_MAX_CTX_MSGS = "kimi-llm-max-ctx-msgs";
 
 const DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_MODEL = "gpt-4o-mini";
+const DEFAULT_MAX_CTX_MSGS = 50;
 
 function readLS(key: string): string {
   if (typeof window === "undefined") return "";
@@ -41,6 +43,7 @@ export type LLMConfig = {
   apiKey: string;
   endpoint: string;
   model: string;
+  maxContextMessages: number;
 };
 
 export function getLLMConfig(): LLMConfig {
@@ -48,6 +51,11 @@ export function getLLMConfig(): LLMConfig {
     apiKey: readLS(KEY_API_KEY),
     endpoint: readLS(KEY_ENDPOINT) || DEFAULT_ENDPOINT,
     model: readLS(KEY_MODEL) || DEFAULT_MODEL,
+    maxContextMessages: (() => {
+      const raw = readLS(KEY_MAX_CTX_MSGS);
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) && n >= 0 ? n : DEFAULT_MAX_CTX_MSGS;
+    })(),
   };
 }
 
@@ -55,6 +63,7 @@ export function setLLMConfig(c: Partial<LLMConfig>): void {
   if (c.apiKey !== undefined) writeLS(KEY_API_KEY, c.apiKey);
   if (c.endpoint !== undefined) writeLS(KEY_ENDPOINT, c.endpoint);
   if (c.model !== undefined) writeLS(KEY_MODEL, c.model);
+  if (c.maxContextMessages !== undefined) writeLS(KEY_MAX_CTX_MSGS, String(c.maxContextMessages));
 }
 
 export function isLLMConfigured(): boolean {

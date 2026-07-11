@@ -73,6 +73,322 @@ export async function fetchCoreMemoryContext(query: string): Promise<string> {
     return await callCoreTool("memory_search_safe", { query });
   } catch {
     return "";
+ }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Memory tools (beyond memory_search_safe / memory_write)
+// ──────────────────────────────────────────────────────────────
+
+// Full memory search with all query parameters. Returns raw text from core.
+export async function fetchCoreMemorySearch(
+  query: string,
+  opts: { limit?: number; threshold?: number } = {},
+): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("memory_search", { query, ...opts });
+  } catch {
+    return "";
+  }
+}
+
+// Read a specific memory by its key/id.
+export async function fetchCoreMemoryRead(key: string): Promise<string> {
+  if (!isCoreBackend() || !key) return "";
+  try {
+    return await callCoreTool("memory_read", { key });
+  } catch {
+    return "";
+  }
+}
+
+// Close/archive a memory so it's no longer active.
+export async function closeCoreMemory(key: string): Promise<boolean> {
+  if (!isCoreBackend() || !key) return false;
+  try {
+    await callCoreTool("memory_close", { key });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Reopen a previously closed memory.
+export async function reopenCoreMemory(key: string): Promise<boolean> {
+  if (!isCoreBackend() || !key) return false;
+  try {
+    await callCoreTool("memory_reopen", { key });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Profile / private profile
+// ──────────────────────────────────────────────────────────────
+
+// Read the character's base profile (persona description, identity, etc.).
+export async function fetchCoreProfile(): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("profile_read", {});
+  } catch {
+    return "";
+  }
+}
+
+// Read the character's private/internal profile (not shared with the user).
+export async function fetchCorePrivateProfile(): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("private_read", {});
+  } catch {
+    return "";
+  }
+}
+
+// Write/update attributes in the character's profile.
+export async function setCoreProfile(data: Record<string, unknown>): Promise<boolean> {
+  if (!isCoreBackend()) return false;
+  try {
+    await callCoreTool("profile_set", data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Observation
+// ──────────────────────────────────────────────────────────────
+
+// Write an observation about the user or world state.
+export async function writeCoreObservation(
+  content: string,
+  opts: { tags?: string[]; source?: string } = {},
+): Promise<boolean> {
+  if (!isCoreBackend() || !content.trim()) return false;
+  try {
+    await callCoreTool("observation_write", { content, ...opts });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Register (key-value storage)
+// ──────────────────────────────────────────────────────────────
+
+// Set a key-value pair in the register.
+export async function setCoreRegister(key: string, value: unknown): Promise<boolean> {
+  if (!isCoreBackend() || !key) return false;
+  try {
+    await callCoreTool("register_set", { key, value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Read a value from the register by key.
+export async function fetchCoreRegister(key: string): Promise<string> {
+  if (!isCoreBackend() || !key) return "";
+  try {
+    return await callCoreTool("register_read", { key });
+  } catch {
+    return "";
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────────────────────
+
+// Set an ongoing state (e.g. mood, activity, location).
+export async function setCoreState(data: Record<string, unknown>): Promise<boolean> {
+  if (!isCoreBackend()) return false;
+  try {
+    await callCoreTool("state_set", data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Read all active/recent states.
+export async function fetchCoreStates(
+  opts: { limit?: number; since?: string } = {},
+): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("state_read", opts);
+  } catch {
+    return "";
+  }
+}
+
+// Get a specific state by key.
+export async function fetchCoreState(key: string): Promise<string> {
+  if (!isCoreBackend() || !key) return "";
+  try {
+    return await callCoreTool("state_get", { key });
+  } catch {
+    return "";
+  }
+}
+
+// Close/complete a state.
+export async function closeCoreState(key: string): Promise<boolean> {
+  if (!isCoreBackend() || !key) return false;
+  try {
+    await callCoreTool("state_close", { key });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Event
+// ──────────────────────────────────────────────────────────────
+
+// Log a general event (independent of chat_write).
+export async function logCoreEvent(
+  event: string,
+  data?: Record<string, unknown>,
+): Promise<boolean> {
+  if (!isCoreBackend() || !event.trim()) return false;
+  try {
+    await callCoreTool("event_log", { event, ...(data ?? {}) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Read events, optionally filtered.
+export async function fetchCoreEvents(
+  opts: { limit?: number; since?: string; type?: string } = {},
+): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("event_read", opts);
+  } catch {
+    return "";
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Topic
+// ──────────────────────────────────────────────────────────────
+
+// Create a new topic.
+export async function createCoreTopic(
+  title: string,
+  data?: Record<string, unknown>,
+): Promise<string> {
+  if (!isCoreBackend() || !title.trim()) return "";
+  try {
+    return await callCoreTool("topic_create", { title, ...(data ?? {}) });
+  } catch {
+    return "";
+  }
+}
+
+// List topics.
+export async function listCoreTopics(opts: { limit?: number } = {}): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("topic_list", opts);
+  } catch {
+    return "";
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Entity
+// ──────────────────────────────────────────────────────────────
+
+// Write entity data (people, places, objects).
+export async function writeCoreEntity(data: Record<string, unknown>): Promise<boolean> {
+  if (!isCoreBackend()) return false;
+  try {
+    await callCoreTool("entity_write", data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// List known entities.
+export async function listCoreEntities(opts: { limit?: number; type?: string } = {}): Promise<string> {
+  if (!isCoreBackend()) return "";
+  try {
+    return await callCoreTool("entity_list", opts);
+  } catch {
+    return "";
+  }
+}
+
+// Search entities by query.
+export async function searchCoreEntities(
+  query: string,
+  opts: { limit?: number; type?: string } = {},
+): Promise<string> {
+  if (!isCoreBackend() || !query.trim()) return "";
+  try {
+    return await callCoreTool("entity_search", { query, ...opts });
+  } catch {
+    return "";
+  }
+}
+
+// Close an entity record.
+export async function closeCoreEntity(id: string): Promise<boolean> {
+  if (!isCoreBackend() || !id) return false;
+  try {
+    await callCoreTool("entity_close", { id });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Graph
+// ──────────────────────────────────────────────────────────────
+
+// Walk the knowledge graph from a starting node.
+export async function walkCoreGraph(
+  start: string,
+  opts: { depth?: number; direction?: "in" | "out" | "both" } = {},
+): Promise<string> {
+  if (!isCoreBackend() || !start) return "";
+  try {
+    return await callCoreTool("graph_walk", { start, ...opts });
+  } catch {
+    return "";
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Closeout
+// ──────────────────────────────────────────────────────────────
+
+// Manually trigger closeout (finalize conversation, archive memory, trigger digest).
+export async function triggerCoreCloseout(
+  reason: string,
+  data?: Record<string, unknown>,
+): Promise<boolean> {
+  if (!isCoreBackend() || !reason.trim()) return false;
+  try {
+    await callCoreTool("closeout", { reason, ...(data ?? {}) });
+    return true;
+  } catch {
+    return false;
   }
 }
 
