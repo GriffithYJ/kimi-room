@@ -71,18 +71,32 @@ export function isLLMConfigured(): boolean {
 }
 
 export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
+  tool_call_id?: string;
+};
+
+export type OpenAIToolDef = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
 };
 
 export type ChatOptions = {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  tools?: OpenAIToolDef[];
+  tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 };
 
 export type ChatResult = {
   text: string;
+  toolCalls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
   raw?: unknown;
 };
 
@@ -96,13 +110,15 @@ export async function llmChat(
       "LLM API key not configured. Open settings → fill API key.",
     );
   }
-  const body = {
+  const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
     temperature: opts.temperature ?? 0.7,
     max_tokens: opts.maxTokens ?? 1024,
     stream: false,
   };
+  if (opts.tools?.length) body.tools = opts.tools;
+  if (opts.tool_choice) body.tool_choice = opts.tool_choice;
   const res = await fetch(cfg.endpoint, {
     method: "POST",
     headers: {
@@ -116,10 +132,14 @@ export async function llmChat(
     throw new Error(`LLM request failed (${res.status}): ${errText.slice(0, 200)}`);
   }
   const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
+    choices?: { message?: { content?: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> } }[];
   };
-  const text = data.choices?.[0]?.message?.content ?? "";
-  return { text, raw: data };
+  const msg = data.choices?.[0]?.message ?? {};
+  const text = msg.content ?? "";
+  const toolCalls = msg.tool_calls?.filter((tc) => tc.type === "function") as
+    | Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>
+    | undefined;
+  return { text, toolCalls, raw: data };
 }
 
 // Convenience · single-shot prompt → text (system + user message format).

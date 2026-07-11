@@ -25,17 +25,47 @@ export const dynamic = "force-dynamic";
 // `store` is allowed as a whole, including op:"empty" — the core-adapter's own
 // backup/empty flow uses it, and every caller past this gate is the owner.
 const ALLOWED_TOOLS = new Set([
+  // Read-only
   "memory_search_safe",
-  "memory_write",
+  "memory_search",
+  "memory_read",
   "chat_read",
-  "chat_write",
   "chat_threads",
+  "profile_read",
+  "private_read",
+  "state_read",
+  "state_get",
+  "event_read",
+  "topic_list",
+  "entity_list",
+  "entity_search",
+  "graph_walk",
+  "calendar_events_query",
+  "register_read",
+  // Write
+  "memory_write",
+  "memory_close",
+  "memory_reopen",
+  "chat_write",
   "chat_delete",
-  "paper_list",
-  "store",
+  "profile_set",
+  "state_set",
+  "state_close",
+  "event_log",
+  "topic_create",
+  "entity_write",
+  "entity_close",
+  "calendar_event_set",
+  "calendar_event_delete",
+  "register_set",
+  "observation_write",
+  "closeout",
+  // System
   "reentry",
   "reentry_delta",
   "chat_postprocess",
+  "paper_list",
+  "store",
 ]);
 
 export async function POST(req: Request) {

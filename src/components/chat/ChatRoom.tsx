@@ -1,14 +1,32 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EmptyRose } from "@/components/EmptyRose";
-import { friendlyLLMError, getLLMConfig, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage } from "@/lib/llm-client";
+import { friendlyLLMError, getLLMConfig, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage, type OpenAIToolDef } from "@/lib/llm-client";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
 import { callCoreTool, readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
 import { getRandomToolText } from "@/lib/tool-texts";
+// Module-level cache: fetch kimi-core MCP tool definitions for LLM function calling.
+let _toolDefsCache: Promise<OpenAIToolDef[]> | null = null;
+async function _fetchToolDefs(): Promise<OpenAIToolDef[]> {
+  if (!_toolDefsCache) {
+    _toolDefsCache = (async () => {
+      try {
+        const res = await fetch("/api/core/tools");
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.tools ?? [];
+      } catch {
+        return [];
+      }
+    })();
+  }
+  return _toolDefsCache;
+}
+
 
 // Grow a textarea to fit its content, capped at maxPx px.
 function useAutoResize(value: string, maxPx = 360) {
@@ -431,9 +449,42 @@ export function ChatRoom() {
       for (const m of slicedMsgs) {
         llmMsgs.push({ role: m.role, content: m.content });
       }
-      const r = await llmChat(llmMsgs);
-      const text = r.text?.trim() || "(空响应)";
-      const usage = (r.raw as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage;
+      // --- Tool loop: let AI call kimi-core tools autonomously ---
+      const toolDefs = isCoreBackend() ? await _fetchToolDefs() : [];
+      let currentResult = await llmChat(
+        llmMsgs,
+        toolDefs.length > 0 ? { tools: toolDefs, tool_choice: "auto" } : {},
+      );
+      const MAX_TOOL_ROUNDS = 10;
+      let toolRound = 0;
+      while (currentResult.toolCalls?.length && toolRound < MAX_TOOL_ROUNDS) {
+        toolRound++;
+        llmMsgs.push({
+          role: "assistant" as const,
+          content: null,
+          tool_calls: currentResult.toolCalls,
+        });
+        for (const tc of currentResult.toolCalls) {
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            const resultText = await callCoreTool(tc.function.name, args);
+            llmMsgs.push({
+              role: "tool" as const,
+              tool_call_id: tc.id,
+              content: resultText ?? "(empty result)",
+            });
+          } catch (e) {
+            llmMsgs.push({
+              role: "tool" as const,
+              tool_call_id: tc.id,
+              content: `Error: ${(e as Error).message}`,
+            });
+          }
+        }
+        currentResult = await llmChat(llmMsgs, { tools: toolDefs, tool_choice: "auto" });
+      }
+      const text = currentResult.text?.trim() || "(空响应)";
+      const usage = (currentResult.raw as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage;
       const cost = usage
         ? { inTok: usage.prompt_tokens ?? 0, outTok: usage.completion_tokens ?? 0 }
         : undefined;
@@ -447,8 +498,8 @@ export function ChatRoom() {
       // the focus/visibility refresh bails (see its guard), so this closes the
       // window where a refresh could read core (without this reply yet) and drop
       // the just-rendered message. writeCoreChat swallows its own errors.
-      if (r.text?.trim()) {
-        const coreId = await writeCoreChat("assistant", r.text.trim(), threadId);
+      if (currentResult.text?.trim()) {
+        const coreId = await writeCoreChat("assistant", currentResult.text.trim(), threadId);
         // tag the just-rendered reply with its core row id so retryLast can delete it
         if (coreId) {
           setSession((s) => ({
@@ -462,7 +513,7 @@ export function ChatRoom() {
           callCoreTool("chat_postprocess", {
             threadId: threadId || session.sessionId,
             userMessage: lastMsg.content,
-            assistantMessage: r.text,
+            assistantMessage: currentResult.text,
           }).catch(() => {});
         }
         unsubTools();
@@ -1473,3 +1524,4 @@ function MessageItem({
     </div>
   );
 }
+
