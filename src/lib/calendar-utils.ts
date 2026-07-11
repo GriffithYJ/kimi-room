@@ -1,3 +1,4 @@
+﻿import { fetchCoreCalendarEntries, setCoreCalendarEntry } from "./kimi-core-client";
 // Utilities for /room/calendar:
 // - localStorage shape & helpers
 // - date helpers (Monday-first grid, JST)
@@ -145,22 +146,62 @@ export type MirrorEvent = {
 export type MirrorDayMap = Record<string, MirrorEvent[]>;
 
 export async function fetchAllEntries(): Promise<CalendarStore | null> {
-  return null;
+  const now = new Date();
+  const startDateCore = new Date(now.getFullYear() - 1, now.getMonth(), 1);
+  const endDateCore = new Date(now.getFullYear() + 1, now.getMonth(), 0);
+  const sd = ymd(startDateCore);
+  const ed = ymd(endDateCore);
+  const entries = await fetchCoreCalendarEntries(sd, ed);
+  if (entries.length === 0) return null;
+  const store: CalendarStore = { cycle: {}, meds: {}, events: {}, notes: {} };
+  for (const e of entries) {
+    if (typeof e.flow === "number" && (e.flow === 1 || e.flow === 2 || e.flow === 3)) {
+      store.cycle[e.date] = e.flow as FlowLevel;
+    }
+    if (e.meds) store.meds[e.date] = e.meds;
+    if (e.event) store.events[e.date] = e.event;
+    if (e.note) store.notes[e.date] = e.note;
+  }
+  return store;
 }
 
 export async function fetchAllEntriesAndMirror(): Promise<{
   own: CalendarStore;
   mirror: MirrorDayMap;
 } | null> {
-  return null;
+  const own = await fetchAllEntries();
+  if (!own) return null;
+  return { own, mirror: {} as MirrorDayMap };
 }
 
-export async function putDayToDb(_date: string, _data: DayData): Promise<boolean> {
-  return true;
+export async function putDayToDb(date: string, data: DayData): Promise<boolean> {
+  const payload: Record<string, unknown> = {};
+  if (data.event) payload.event = data.event;
+  if (data.note) payload.note = data.note;
+  if (data.flow) payload.flow = data.flow;
+  if (data.meds) payload.meds = data.meds;
+  return setCoreCalendarEntry(date, payload);
 }
 
 export async function migrateLocalToDb(): Promise<{ ok: boolean; written: number }> {
-  return { ok: true, written: 0 };
+  const local = loadStore();
+  let count = 0;
+  const dates = new Set([
+    ...Object.keys(local.cycle),
+    ...Object.keys(local.meds),
+    ...Object.keys(local.events),
+    ...Object.keys(local.notes),
+  ]);
+  for (const date of dates) {
+    const data: DayData = {};
+    if (local.cycle[date]) data.flow = local.cycle[date];
+    if (local.meds[date]) data.meds = local.meds[date];
+    if (local.events[date]) data.event = local.events[date];
+    if (local.notes[date]) data.note = local.notes[date];
+    const ok = await putDayToDb(date, data);
+    if (ok) count++;
+  }
+  return { ok: true, written: count };
 }
 
 export function mergeStoresPreferLocal(

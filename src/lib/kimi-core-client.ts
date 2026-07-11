@@ -189,3 +189,53 @@ export async function fetchCoreReentryDelta(tag?: string): Promise<string> {
   }
 }
 
+// Calendar: query entries from kimi-core by date range. Returns the raw array
+// of { date, event, note, flow, meds } from calendar_events_query. Empty []
+// in local mode or on failure, so callers always get a clean iterable.
+export type CoreCalendarEntry = {
+  date: string;
+  event?: string | null;
+  note?: string | null;
+  flow?: number | null;
+  meds?: string | null;
+};
+export async function fetchCoreCalendarEntries(
+  startDate: string,
+  endDate: string,
+): Promise<CoreCalendarEntry[]> {
+  if (!isCoreBackend()) return [];
+  try {
+    const text = await callCoreTool("calendar_events_query", { startDate, endDate });
+    const arr = JSON.parse(text) as unknown;
+    return Array.isArray(arr) ? (arr as CoreCalendarEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Calendar: set entry for a specific date. Writes event/note/flow/meds via
+// calendar_event_set. Returns true on success; false in local mode or on failure.
+export async function setCoreCalendarEntry(
+  date: string,
+  data: Record<string, unknown>,
+): Promise<boolean> {
+  if (!isCoreBackend()) return false;
+  try {
+    await callCoreTool("calendar_event_set", { date, ...data });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Calendar: delete entry for a specific date via calendar_event_delete.
+// Returns true on success; false in local mode or on failure.
+export async function deleteCoreCalendarEntry(date: string): Promise<boolean> {
+  if (!isCoreBackend()) return false;
+  try {
+    await callCoreTool("calendar_event_delete", { date });
+    return true;
+  } catch {
+    return false;
+  }
+}
