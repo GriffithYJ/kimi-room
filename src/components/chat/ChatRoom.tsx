@@ -292,7 +292,17 @@ export function ChatRoom() {
               msgs:
                 s.sessionId === tid
                   ? mergeCoreRows(s.msgs, rows)
-                  : rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at })),
+                  : (() => {
+                      // After refresh s.sessionId != tid, try localStorage for local-only fields
+                      try {
+                        const ls = localStorage.getItem("kimi-web:chat:session");
+                        if (ls) {
+                          const p = JSON.parse(ls);
+                          if (p?.msgs?.length) return mergeCoreRows(p.msgs, rows);
+                        }
+                      } catch {}
+                      return rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at }));
+                    })(),
             }));
           });
         if (sessionParam) {
