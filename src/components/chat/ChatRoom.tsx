@@ -1134,11 +1134,10 @@ function MessageItem({
   const tsLabel = useMemo(() => {
     try {
       const d = new Date(msg.ts);
-      const j = new Date(d.getTime() + 9 * 3600 * 1000);
-      const m = String(j.getUTCMonth() + 1).padStart(2, "0");
-      const day = String(j.getUTCDate()).padStart(2, "0");
-      const hh = String(j.getUTCHours()).padStart(2, "0");
-      const mm = String(j.getUTCMinutes()).padStart(2, "0");
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
       return `${m}.${day} ${hh}:${mm}`;
     } catch {
       return "";
