@@ -422,7 +422,9 @@ export function ChatRoom() {
       let _tc = 0;
       const unsubTools = subscribeCoreToolCalls((ev) => {
         const id = "tool-" + (++_tc) + "-" + Date.now();
-        collectedTools.push({ id, name: ev.name, label: getRandomToolText(ev.name), arguments: ev.args ? JSON.stringify(ev.args) : undefined, result: ev.result, preview: ev.preview, status: ev.status });
+        const entry = { id, name: ev.name, label: getRandomToolText(ev.name), arguments: ev.args ? JSON.stringify(ev.args) : undefined, result: ev.result, preview: ev.preview, status: ev.status };
+        const idx = collectedTools.findIndex((ct) => ct.name === ev.name);
+        if (idx >= 0) collectedTools[idx] = entry; else collectedTools.push(entry);
         setSession((s) => ({
           ...s,
           msgs: s.msgs.map((m) =>
@@ -1308,12 +1310,21 @@ function MessageItem({
           {tsLabel}
         </div>
       )}
-      {/* tool calls — assistant only. 默认 inline 简洁 (name + preview),
-          点击 expand 显示 args JSON. */}
+      {/* tool calls — assistant only. 每个工具一行, 卡片容器 + 状态图标,
+          点击 expand 显示详情. */}
       {!isUser && msg.tools && msg.tools.length > 0 && (
-        <div style={{ marginBottom: 6, textAlign: "center" }}>
+        <div style={{
+          marginBottom: 6,
+          textAlign: "center",
+          borderRadius: 6,
+          border: `1px solid ${p.hairline}`,
+          padding: "4px 10px",
+          display: "inline-block",
+          maxWidth: "90%",
+        }}>
           {msg.tools.map((t) => {
             const expanded = expandedTools.has(t.id);
+            const statusIcon = t.status === "pending" ? "⋯ " : t.status === "error" ? "✗ " : "✓ ";
             const formattedArgs = (() => {
               if (!t.arguments) return null;
               try {
@@ -1324,7 +1335,6 @@ function MessageItem({
             })();
             return (
               <div key={t.id} style={{ padding: "1px 0" }}>
-                <div style={{ position: "sticky", top: 0, zIndex: 1, background: p.bg }}>
                 <button
                   type="button"
                   onClick={() =>
@@ -1350,11 +1360,10 @@ function MessageItem({
                     cursor: "pointer",
                   }}
                 >
-                  {t.status === "pending" ? "⋯ " : "✓ "}
+                  {statusIcon}
                   {t.label}
                 </button>
-                </div>
-                {(expanded && (formattedArgs || t.preview || t.result)) && (
+                {expanded && (
                   <div
                     style={{
                       marginTop: 4,
@@ -1371,26 +1380,32 @@ function MessageItem({
                       textAlign: "left",
                     }}
                   >
-                    {(t.result || t.preview) && (
-                      <div style={{ marginBottom: formattedArgs ? 6 : 0, opacity: 0.85 }}>
-                        {"→"} {t.result ?? t.preview}
-                      </div>
-                    )}
-                    {formattedArgs && (
-                      <pre
-                        style={{
-                          margin: 0,
-                          fontSize: 11,
-                          lineHeight: 1.55,
-                          color: p.inkSoft,
-                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          opacity: 0.85,
-                        }}
-                      >
-                        {formattedArgs}
-                      </pre>
+                    {(t.result || t.preview || formattedArgs) ? (
+                      <>
+                        {(t.result || t.preview) && (
+                          <div style={{ marginBottom: formattedArgs ? 6 : 0, opacity: 0.85 }}>
+                            {"→"} {t.result ?? t.preview}
+                          </div>
+                        )}
+                        {formattedArgs && (
+                          <pre
+                            style={{
+                              margin: 0,
+                              fontSize: 11,
+                              lineHeight: 1.55,
+                              color: p.inkSoft,
+                              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                              opacity: 0.85,
+                            }}
+                          >
+                            {formattedArgs}
+                          </pre>
+                        )}
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 11, fontStyle: "italic", color: p.inkMute }}>（无详情）</div>
                     )}
                   </div>
                 )}
