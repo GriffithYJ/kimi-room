@@ -568,8 +568,8 @@ export async function saveSettingsToCore(
 ): Promise<boolean> {
   if (!isCoreBackend()) return false;
   try {
-    await callCoreTool(state_set, {
-      key: kimi_room_settings,
+    await callCoreTool("state_set", {
+      key: "kimi_room_settings",
       value: JSON.stringify(settings),
     });
     return true;
@@ -581,19 +581,19 @@ export async function saveSettingsToCore(
 export async function loadSettingsFromCore(): Promise<Record<string, string> | null> {
   if (!isCoreBackend()) return null;
   try {
-    const text = await callCoreTool(state_get, { key: kimi_room_settings });
+    const text = await callCoreTool("state_get", { key: "kimi_room_settings" });
     if (!text || text === null || text === undefined) return null;
     // state_get returns one of:
     //   { key: ..., value: {...} }  (wrapped object)
     //   {...}                          (direct JSON string)
     //   { ... }                          (already parsed)
     const parsed = JSON.parse(text);
-    if (typeof parsed === object && parsed !== null) {
+    if (typeof parsed === "object" && parsed !== null) {
       const raw = (parsed as Record<string, unknown>).value ?? parsed;
-      if (typeof raw === string) return JSON.parse(raw) as Record<string, string>;
+      if (typeof raw === "string") return JSON.parse(raw) as Record<string, string>;
       return raw as Record<string, string>;
     }
-    return typeof parsed === string ? (JSON.parse(parsed) as Record<string, string>) : null;
+    return typeof parsed === "string" ? (JSON.parse(parsed) as Record<string, string>) : null;
   } catch {
     return null;
   }

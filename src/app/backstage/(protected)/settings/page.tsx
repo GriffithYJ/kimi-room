@@ -145,6 +145,17 @@ export default function SettingsPage() {
     setCharName(charName);
     setUserName(userName);
     setLLMConfig(llm);
+    if (isCoreBackend()) {
+      saveSettingsToCore({
+        title,
+        charName,
+        userName,
+        apiKey: llm.apiKey,
+        endpoint: llm.endpoint,
+        model: llm.model,
+        maxContextMessages: String(llm.maxContextMessages),
+      });
+    }
     flash("保存了");
   }
 
