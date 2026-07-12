@@ -1451,7 +1451,6 @@ function MessageItem({
         <div
           style={{
             maxWidth: "82%",
-            color: p.ink,
             fontSize: 15.5,
             lineHeight: 1.65,
             whiteSpace: "pre-wrap",
