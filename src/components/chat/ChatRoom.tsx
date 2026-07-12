@@ -84,30 +84,61 @@ function mergeCoreRows(
   local: ChatMessage[],
   rows: { id: string; role: "user" | "assistant"; text: string; at: string }[],
 ): ChatMessage[] {
-  const merged: ChatMessage[] = rows.map((r) => {
-    // Re-attach local-only fields: match the already-synced row by its stable core id,
-    // else (a local msg that hasn't been tagged with a coreId yet) by role+content.
-    const prior = local.find(
+  // Build set of paragraph-fragment IDs to detect multi-bubble replies
+  const isParaFrag = (m: ChatMessage) => typeof m.id === "string" && /-p\d+$/.test(m.id);
+  const merged: ChatMessage[] = [];
+  rows.forEach((r) => {
+    // Re-attach local-only fields: try exact match first (by coreId or role+content),
+    // then try matching paragraph fragments (local content is a subset of core text).
+    let prior = local.find(
       (m) => (m.coreId && m.coreId === r.id) || (m.role === r.role && m.content === r.text),
     );
-    return {
-      id: `core-${r.id}`, // stable across rehydrates (was index-based, which shifted on every merge)
-      coreId: r.id,
-      role: r.role,
-      content: r.text,
-      ts: r.at,
-      ...(prior?.thinking ? { thinking: prior.thinking } : {}),
-      ...(prior?.tools ? { tools: prior.tools } : {}),
-      ...(prior?.cost ? { cost: prior.cost } : {}),
-    };
+    if (!prior && r.role === "assistant") {
+      // Try paragraph-fragment matched: join all fragments with the same baseId
+      // and see if they reconstruct the core text exactly.
+      for (const m of local) {
+        if (!isParaFrag(m) || m.role !== r.role) continue;
+        const baseId = m.id.replace(/-p\d+$/, "");
+        const frags = local
+          .filter((x) => typeof x.id === "string" && x.id.startsWith(baseId))
+          .sort((a, b) => {
+            const na = parseInt((a.id ?? "").match(/-p(\d+)$/)?.[1] ?? "0");
+            const nb = parseInt((b.id ?? "").match(/-p(\d+)$/)?.[1] ?? "0");
+            return na - nb;
+          });
+        const combined = frags.map((x) => x.content).join("\n\n");
+        if (combined === r.text) {
+          prior = { ...frags[0], cost: frags[frags.length - 1]?.cost };
+          break;
+        }
+      }
+    }
+    // If this core row is covered by a multi-bubble paragraph group, skip adding
+    // the merged message ? display the paragraph fragments directly instead.
+    const skipCore = r.role === "assistant" && local.some(
+      (m) => isParaFrag(m) && m.role === r.role && r.text.includes(m.content),
+    );
+    if (!skipCore) {
+      merged.push({
+        id: `core-${r.id}`, // stable across rehydrates
+        coreId: r.id,
+        role: r.role,
+        content: r.text,
+        ts: r.at,
+        ...(prior?.thinking ? { thinking: prior.thinking } : {}),
+        ...(prior?.tools ? { tools: prior.tools } : {}),
+        ...(prior?.cost ? { cost: prior.cost } : {}),
+      });
+    }
   });
-  // Preserve unsynced optimistic messages: any local msg newer than the newest
-  // core row (its write may still be in flight) that isn't already represented.
+  // Preserve unsynced optimistic messages + paragraph-fragment messages.
+  // Paragraph fragments always survive (regardless of timestamp) because they are
+  // local-only display artifacts that don't exist in core rows.
   const newestCoreAt = rows.length ? rows[rows.length - 1].at : "";
   for (const m of local) {
     if (
-      m.ts > newestCoreAt &&
-      !merged.some((x) => x.role === m.role && x.content === m.content)
+      (isParaFrag(m) && !merged.some((x) => x.content === m.content)) ||
+      (m.ts > newestCoreAt && !merged.some((x) => x.role === m.role && x.content === m.content))
     ) {
       merged.push(m);
     }
@@ -233,8 +264,12 @@ export function ChatRoom() {
   const scrollRef = useRef<HTMLDivElement>(null);
   // current thread id mirror — lets the focus-refresh handler read it without re-subscribing
   const threadRef = useRef(session.sessionId);
-  const lastReentryRef = useRef(0);
-  const hasReentryRef = useRef(false);
+  const [lastReentryTime, setLastReentryTime] = useState(() => {
+    try { return Number(localStorage.getItem("kimi:lastReentry")) || 0; } catch { return 0; }
+  });
+  const [hasReentried, setHasReentried] = useState(() => {
+    try { return localStorage.getItem("kimi:hasReentried") === "true"; } catch { return false; }
+  });
   const firstMountRef = useRef(true);
   useEffect(() => {
     threadRef.current = session.sessionId;
@@ -435,19 +470,22 @@ export function ChatRoom() {
       let reentryCtx = "";
       if (isCoreBackend()) {
         const isNewThread = msgs.length === 0;
-        const hoursGap = lastReentryRef.current
-          ? (Date.now() - lastReentryRef.current) / 3600_000
+        const hoursGap = lastReentryTime
+          ? (Date.now() - lastReentryTime) / 3600_000
           : 999;
-        if (isNewThread || !hasReentryRef.current) {
+        if (isNewThread || !hasReentried) {
           reentryCtx = await fetchCoreReentryContext(threadId);
-          hasReentryRef.current = true;
           if (reentryCtx) {
-            lastReentryRef.current = Date.now();
+            setHasReentried(true);
+            setLastReentryTime(Date.now());
+            try { localStorage.setItem("kimi:hasReentried", "true"); } catch {}
+            try { localStorage.setItem("kimi:lastReentry", String(Date.now())); } catch {}
           }
         } else if (hoursGap > 2) {
           reentryCtx = await fetchCoreReentryDelta(threadId);
           if (reentryCtx) {
-            lastReentryRef.current = Date.now();
+            setLastReentryTime(Date.now());
+            try { localStorage.setItem("kimi:lastReentry", String(Date.now())); } catch {}
           }
         }
       }
@@ -1552,14 +1590,10 @@ function MessageItem({
         <div
           style={{
             marginTop: 3,
-            fontSize: 9,
-            letterSpacing: 1.5,
-            color: p.inkMute,
+            textAlign: "left",
+            fontSize: 11,
             fontFamily: FONT_STACK,
             textTransform: "uppercase",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
           }}
         >
           in {msg.cost.inTok} · out {msg.cost.outTok}
