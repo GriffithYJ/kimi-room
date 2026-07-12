@@ -440,8 +440,8 @@ export function ChatRoom() {
           : 999;
         if (isNewThread || !hasReentryRef.current) {
           reentryCtx = await fetchCoreReentryContext(threadId);
+          hasReentryRef.current = true;
           if (reentryCtx) {
-            hasReentryRef.current = true;
             lastReentryRef.current = Date.now();
           }
         } else if (hoursGap > 2) {
@@ -522,7 +522,7 @@ export function ChatRoom() {
               : m,
           ),
         }));
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, paragraphDelay(paragraphs[0])));
         for (let i = 1; i < paragraphs.length; i++) {
           const paraId = replyId + "-p" + i;
           const paraMsg: ChatMessage = {
@@ -539,7 +539,7 @@ export function ChatRoom() {
             return { ...s, msgs: newMsgs };
           });
           if (i < paragraphs.length - 1) {
-            await new Promise((r) => setTimeout(r, 600));
+            await new Promise((r) => setTimeout(r, paragraphDelay(paragraphs[i])));
           }
         }
         // Attach cost to the last paragraph
@@ -1244,6 +1244,15 @@ function renderEmphasis(text: string): ReactNode {
   return nodes.length > 0 ? nodes : text;
 }
 
+// Calculate paragraph display delay proportional to length (human-like pacing)
+function paragraphDelay(text: string): number {
+  const len = text.length;
+  if (len <= 20) return 200;
+  if (len <= 60) return 350;
+  if (len <= 150) return 550;
+  return 850;
+}
+
 // Split text into sentences for progressive rendering (。！？.!?\n delimiters, kept with sentence)
 function splitSentences(text: string): string[] {
   if (!text) return [""];
@@ -1337,7 +1346,6 @@ function MessageItem({
     <div
       style={{
         marginTop: showTs ? 22 : 8,
-        textAlign: "center",
       }}
     >
       {showTs && (
@@ -1357,14 +1365,15 @@ function MessageItem({
       {/* tool calls — assistant only. 每个工具一行, 卡片容器 + 状态图标,
           点击 expand 显示详情. */}
       {!isUser && msg.tools && msg.tools.length > 0 && (
+        <div style={{ textAlign: "center" }}>
         <div style={{
           marginBottom: 6,
-          textAlign: "center",
           borderRadius: 6,
           border: `1px solid ${p.hairline}`,
           padding: "4px 10px",
           display: "inline-block",
           maxWidth: "90%",
+          boxSizing: "border-box",
         }}>
           {msg.tools.map((t) => {
             const expanded = expandedTools.has(t.id);
@@ -1457,6 +1466,7 @@ function MessageItem({
             );
           })}
         </div>
+        </div>
       )}
       {/* thinking block — assistant only, collapsible, default 收 */}
       {!isUser && msg.thinking && msg.thinking.length > 0 && (
@@ -1547,6 +1557,9 @@ function MessageItem({
             color: p.inkMute,
             fontFamily: FONT_STACK,
             textTransform: "uppercase",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
           }}
         >
           in {msg.cost.inTok} · out {msg.cost.outTok}
