@@ -1249,11 +1249,11 @@ function splitSentences(text: string): string[] {
   if (!text) return [""];
   const parts = text.split(/(?<=[。！？.!?\n])/);
   return parts.filter((s) => s.trim().length > 0);
+}
 
 function splitParagraphs(text: string): string[] {
   if (!text) return [""];
   return text.split(/\n{2,}/).filter((s) => s.trim().length > 0);
-}
 }
 
 
