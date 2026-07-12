@@ -509,27 +509,49 @@ export function ChatRoom() {
       const cost = usage
         ? { inTok: usage.prompt_tokens ?? 0, outTok: usage.completion_tokens ?? 0 }
         : undefined;
-      // Sentence-by-sentence progressive rendering
-      const sentences = splitSentences(text);
-      if (sentences.length > 1 && text !== "(空响应)") {
-        for (let i = 0; i < sentences.length; i++) {
-          setSession((s) => ({
-            ...s,
-            msgs: s.msgs.map((m) =>
-              m.id === replyId
-                ? { ...m, content: sentences.slice(0, i + 1).join("") }
-                : m,
-            ),
-          }));
-          await new Promise((r) => setTimeout(r, 300));
-        }
-        // All sentences shown — now attach cost
+      // Paragraph-by-paragraph multi-bubble rendering
+      const paragraphs = splitParagraphs(text);
+      if (paragraphs.length > 1 && text !== "(空响应)") {
+        // Rename initial replyId -> replyId-p0, fill first paragraph
+        const p0Id = replyId + "-p0";
         setSession((s) => ({
           ...s,
           msgs: s.msgs.map((m) =>
-            m.id === replyId ? { ...m, cost } : m,
+            m.id === replyId
+              ? { ...m, id: p0Id, content: paragraphs[0] }
+              : m,
           ),
         }));
+        await new Promise((r) => setTimeout(r, 600));
+        for (let i = 1; i < paragraphs.length; i++) {
+          const paraId = replyId + "-p" + i;
+          const paraMsg: ChatMessage = {
+            id: paraId,
+            role: "assistant",
+            content: paragraphs[i],
+            ts: new Date().toISOString(),
+          };
+          setSession((s) => {
+            const prevIdx = s.msgs.findIndex((m) => m.id === replyId + "-p" + (i - 1));
+            if (prevIdx === -1) return s;
+            const newMsgs = [...s.msgs];
+            newMsgs.splice(prevIdx + 1, 0, paraMsg);
+            return { ...s, msgs: newMsgs };
+          });
+          if (i < paragraphs.length - 1) {
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        }
+        // Attach cost to the last paragraph
+        if (cost) {
+          const lastParaId = replyId + "-p" + (paragraphs.length - 1);
+          setSession((s) => ({
+            ...s,
+            msgs: s.msgs.map((m) =>
+              m.id === lastParaId ? { ...m, cost } : m,
+            ),
+          }));
+        }
       } else {
         setSession((s) => ({
           ...s,
@@ -547,9 +569,11 @@ export function ChatRoom() {
         const coreId = await writeCoreChat("assistant", currentResult.text.trim(), threadId);
         // tag the just-rendered reply with its core row id so retryLast can delete it
         if (coreId) {
+          // Try replyId first, fall back to replyId-p0 (paragraph mode)
+          const para0Id = replyId + "-p0";
           setSession((s) => ({
             ...s,
-            msgs: s.msgs.map((m) => (m.id === replyId ? { ...m, coreId } : m)),
+            msgs: s.msgs.map((m) => (m.id === replyId || m.id === para0Id ? { ...m, coreId } : m)),
           }));
         }
         // Fire-and-forget: let kimi-core analyze this exchange for state/event recording
@@ -629,11 +653,25 @@ export function ChatRoom() {
     // Core mode: also delete the stale reply's row in kimi-core (by its coreId) so the
     // bad answer doesn't linger in the cross-device timeline / digest, and the retry
     // replaces it instead of appending a second reply other devices keep seeing.
-    const lastAssistantIdx = [...session.msgs]
-      .reverse()
-      .findIndex((m) => m.role === "assistant");
-    if (lastAssistantIdx === -1) return;
-    const removeAt = session.msgs.length - 1 - lastAssistantIdx;
+    const rev = [...session.msgs].reverse();
+    const lastAsstRevIdx = rev.findIndex((m) => m.role === "assistant");
+    if (lastAsstRevIdx === -1) return;
+    let removeAt = session.msgs.length - 1 - lastAsstRevIdx;
+    const lastAsst = session.msgs[removeAt];
+    // If the last assistant is part of a paragraph group (id ends with -p\d+),
+    // walk backward to find the FIRST message in that group (p0)
+    const paraMatch = lastAsst.id?.match(/^(.*)-p\d+$/);
+    if (paraMatch) {
+      const baseId = paraMatch[1];
+      for (let i = removeAt; i >= 0; i--) {
+        const m = session.msgs[i];
+        if (m.id && m.id.startsWith(baseId + "-p")) {
+          removeAt = i;
+        } else {
+          break;
+        }
+      }
+    }
     const staleCoreId = session.msgs[removeAt]?.coreId;
     if (staleCoreId) void deleteCoreChat(staleCoreId);
     const historyMsgs = session.msgs.slice(0, removeAt);
@@ -1211,6 +1249,11 @@ function splitSentences(text: string): string[] {
   if (!text) return [""];
   const parts = text.split(/(?<=[。！？.!?\n])/);
   return parts.filter((s) => s.trim().length > 0);
+
+function splitParagraphs(text: string): string[] {
+  if (!text) return [""];
+  return text.split(/\n{2,}/).filter((s) => s.trim().length > 0);
+}
 }
 
 
