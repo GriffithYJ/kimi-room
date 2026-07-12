@@ -1337,6 +1337,7 @@ function MessageItem({
     <div
       style={{
         marginTop: showTs ? 22 : 8,
+        textAlign: "center",
       }}
     >
       {showTs && (
