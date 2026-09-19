@@ -8,13 +8,18 @@
 // /room cover 中间那个 chat 入口 emoji 跟今天的真实月相同步, 每天打开形状不一样.
 
 const REF_NEW_MOON_MS = Date.UTC(2000, 0, 6, 18, 14, 0);
-const SYNODIC_MS = 29.530588853 * 24 * 3600 * 1000;
+const SYNODIC_DAYS = 29.530588853;
+const SYNODIC_MS = SYNODIC_DAYS * 24 * 3600 * 1000;
 
 export type MoonPhase = {
   /** 0..1 — fractional progress through synodic month */
   fraction: number;
   /** 0..7 — index into 8-phase scheme (rounded to nearest 1/8) */
   index: number;
+  /** 0..100 — lit fraction of the disc, rounded. The foyer's LUNA HODIE line. */
+  illumination: number;
+  /** Age in days since the last new moon (0..29.53). */
+  age: number;
   emoji: string;
   name: string;
 };
@@ -38,6 +43,8 @@ export function getMoonPhase(date: Date = new Date()): MoonPhase {
   return {
     fraction: frac,
     index,
+    illumination: Math.round(((1 - Math.cos(2 * Math.PI * frac)) / 2) * 100),
+    age: frac * SYNODIC_DAYS,
     emoji: PHASES[index].emoji,
     name: PHASES[index].name,
   };

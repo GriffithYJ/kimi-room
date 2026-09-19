@@ -2,7 +2,7 @@
   "name": "kimi · room",
   "short_name": "kimi",
   "description": "private companion room",
-  "start_url": "/room",
+  "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0a0506",

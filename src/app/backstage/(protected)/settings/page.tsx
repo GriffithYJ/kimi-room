@@ -13,9 +13,14 @@ import Link from "next/link";
 import { KIMI_MODE } from "@/lib/kimi-mode";
 import { APP_TITLE_DEFAULT, getAppTitle, setAppTitle } from "@/lib/app-title";
 import {
-  getLLMConfig,
-  setLLMConfig,
-  type LLMConfig,
+  DEFAULT_PARAMS,
+  fetchModels,
+  guessProviderName,
+  loadLLMSettings,
+  newProfileId,
+  saveLLMSettings,
+  type LLMSettings,
+  type ProviderProfile,
 } from "@/lib/llm-client";
 import {
   clearOtherPortrait,
@@ -37,6 +42,25 @@ import {
   setUserName,
 } from "@/lib/template";
 import { RoomLayoutEditor } from "@/components/backstage/RoomLayoutEditor";
+import {
+  SEND_ART_PRESETS,
+  SEND_KEY_PRESET_ORDER,
+} from "@/components/chat/arcvs/tokens";
+import {
+  SEND_KEY_DEFAULTS,
+  loadSendKeySettings,
+  saveSendKeySettings,
+  type SendKeySettings,
+} from "@/lib/send-key-prefs";
+import {
+  FOYER_NOTE_DEFAULT,
+  FOYER_QUOTE_DEFAULT,
+  readFoyerPrefs,
+  readFoyerSkipCookie,
+  setFoyerSkipCookie,
+  todayISO,
+  writeFoyerPrefs,
+} from "@/lib/foyer-prefs";
 
 type Toast = { msg: string; tone: "ok" | "err" } | null;
 
@@ -67,7 +91,14 @@ export default function SettingsPage() {
   const [title, setTitle] = useState(APP_TITLE_DEFAULT);
   const [charName, setCharNameState] = useState(CHAR_NAME_DEFAULT);
   const [userName, setUserNameState] = useState("you");
-  const [llm, setLLM] = useState<LLMConfig>({ apiKey: "", endpoint: "", model: "", maxContextMessages: 50 });
+  const [llm, setLLM] = useState<LLMSettings>({
+    profiles: [],
+    activeProfileId: "",
+    activeModel: "",
+    params: { ...DEFAULT_PARAMS },
+  });
+  const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
+  const [modelsBusy, setModelsBusy] = useState<string | null>(null);
   const [selfPreview, setSelfPreview] = useState<string | null>(null);
   const [otherPreview, setOtherPreview] = useState<string | null>(null);
   const [meds, setMeds] = useState<MedButton[]>([]);
@@ -75,35 +106,81 @@ export default function SettingsPage() {
   const [toast, setToast] = useState<Toast>(null);
   const [demoOn, setDemoOn] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [sendKey, setSendKeyState] = useState<SendKeySettings>(SEND_KEY_DEFAULTS);
+  const [foyer, setFoyer] = useState({
+    since: "",
+    quote: "",
+    note: "",
+    wxLabel: "",
+    wxLat: "",
+    wxLng: "",
+    skip: false,
+  });
 
   useEffect(() => {
     setTitle(getAppTitle());
     setCharNameState(getCharName());
     setUserNameState(getUserName());
-    setLLM(getLLMConfig());
+    setLLM(loadLLMSettings());
     setMeds(loadMedButtons());
     setDemoOn(isDemoOn());
     refreshPortraits();
-    // Load settings from kimi-core (overrides localStorage for cross-device sync)
+    setSendKeyState(loadSendKeySettings());
+    // fork: pull settings from kimi-core (overrides local for cross-device sync)
     if (isCoreBackend()) {
-      loadSettingsFromCore().then((coreSettings) => {
-        if (coreSettings) {
-          if (coreSettings.title) setTitle(coreSettings.title);
-          if (coreSettings.charName) setCharNameState(coreSettings.charName);
-          if (coreSettings.userName) setUserNameState(coreSettings.userName);
-          setLLM((prev) => ({
-            ...prev,
-            apiKey: coreSettings.apiKey ?? prev.apiKey,
-            endpoint: coreSettings.endpoint ?? prev.endpoint,
-            model: coreSettings.model ?? prev.model,
-            maxContextMessages: coreSettings.maxContextMessages
-              ? parseInt(coreSettings.maxContextMessages, 10) || prev.maxContextMessages
-              : prev.maxContextMessages,
-          }));
+      loadSettingsFromCore().then((core) => {
+        if (!core) return;
+        if (core.title) setTitle(core.title);
+        if (core.charName) setCharNameState(core.charName);
+        if (core.userName) setUserNameState(core.userName);
+        if (core.llmSettingsJson) {
+          try {
+            const parsed = JSON.parse(core.llmSettingsJson) as Partial<LLMSettings>;
+            setLLM((prev) => ({ ...prev, ...parsed }));
+          } catch {}
         }
       });
     }
+    const f = readFoyerPrefs();
+    setFoyer({
+      since: f.since ?? "",
+      quote: f.quote,
+      note: f.note,
+      wxLabel: f.weather?.label ?? "",
+      wxLat: f.weather ? String(f.weather.lat) : "",
+      wxLng: f.weather ? String(f.weather.lng) : "",
+      skip: readFoyerSkipCookie(),
+    });
   }, []);
+
+  function updateSendKey(patch: Partial<SendKeySettings>) {
+    const next = { ...sendKey, ...patch };
+    setSendKeyState(next);
+    saveSendKeySettings(next);
+  }
+
+  function onSaveFoyer(e: React.FormEvent) {
+    e.preventDefault();
+    const lat = Number(foyer.wxLat);
+    const lng = Number(foyer.wxLng);
+    const hasWeather =
+      foyer.wxLat.trim() !== "" &&
+      foyer.wxLng.trim() !== "" &&
+      Number.isFinite(lat) &&
+      Number.isFinite(lng);
+    if (!hasWeather && (foyer.wxLat.trim() !== "" || foyer.wxLng.trim() !== "")) {
+      flash("天气要经纬度两个都填, 且是数字", "err");
+      return;
+    }
+    writeFoyerPrefs({
+      since: foyer.since.trim() || null,
+      quote: foyer.quote,
+      note: foyer.note,
+      weather: hasWeather ? { label: foyer.wxLabel.trim(), lat, lng } : null,
+    });
+    setFoyerSkipCookie(foyer.skip);
+    flash("保存了");
+  }
 
   function addMed() {
     const label = medDraft.trim();
@@ -144,19 +221,101 @@ export default function SettingsPage() {
     setAppTitle(title);
     setCharName(charName);
     setUserName(userName);
-    setLLMConfig(llm);
+    saveLLMSettings(llm);
+    // fork: push settings to kimi-core for cross-device sync
     if (isCoreBackend()) {
       saveSettingsToCore({
         title,
         charName,
         userName,
-        apiKey: llm.apiKey,
-        endpoint: llm.endpoint,
-        model: llm.model,
-        maxContextMessages: String(llm.maxContextMessages),
+        llmSettingsJson: JSON.stringify(llm),
       });
     }
     flash("保存了");
+  }
+
+  // ── LLM profiles helpers ─────────────────────
+
+  function updateProfile(id: string, patch: Partial<ProviderProfile>) {
+    setLLM((s) => ({
+      ...s,
+      profiles: s.profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+    }));
+  }
+
+  function addProfile() {
+    const p: ProviderProfile = {
+      id: newProfileId(),
+      name: "",
+      format: "openai",
+      endpoint: "",
+      apiKey: "",
+      models: [],
+    };
+    setLLM((s) => ({
+      ...s,
+      profiles: [...s.profiles, p],
+      // 第一条档案自动设为默认
+      activeProfileId: s.activeProfileId || p.id,
+    }));
+    setExpandedProfile(p.id);
+  }
+
+  function removeProfile(id: string) {
+    const pf = llm.profiles.find((p) => p.id === id);
+    if (!confirm(`删档案「${pf?.name || "未命名"}」? 它的 key 和模型列表一起删.`)) return;
+    setLLM((s) => {
+      const profiles = s.profiles.filter((p) => p.id !== id);
+      const next = { ...s, profiles };
+      if (s.activeProfileId === id) {
+        next.activeProfileId = profiles[0]?.id ?? "";
+        next.activeModel = profiles[0]?.models[0] ?? "";
+      }
+      return next;
+    });
+  }
+
+  async function onFetchModels(id: string) {
+    const pf = llm.profiles.find((p) => p.id === id);
+    if (!pf) return;
+    if (!pf.endpoint.trim() || !pf.apiKey.trim()) {
+      flash("先填 endpoint + key 再拉模型", "err");
+      return;
+    }
+    setModelsBusy(id);
+    try {
+      const ids = await fetchModels(pf);
+      if (!ids.length) {
+        flash("端点返回了空列表", "err");
+        return;
+      }
+      updateProfile(id, { models: ids });
+      flash(`拉到 ${ids.length} 个模型 · 记得保存`);
+    } catch (err) {
+      flash(`拉取失败: ${(err as Error).message.slice(0, 80)}`, "err");
+    } finally {
+      setModelsBusy(null);
+    }
+  }
+
+  // 默认档案+模型的 select 值 (option 不够时附加当前值)
+  const modelOptions = llm.profiles.flatMap((pf) =>
+    pf.models.map((m) => ({ pid: pf.id, model: m, label: `${pf.name || "未命名"} · ${m}` })),
+  );
+  const activeKey = `${llm.activeProfileId}::${llm.activeModel}`;
+  if (
+    llm.activeProfileId &&
+    llm.activeModel &&
+    !modelOptions.some((o) => `${o.pid}::${o.model}` === activeKey)
+  ) {
+    const pf = llm.profiles.find((p) => p.id === llm.activeProfileId);
+    if (pf) {
+      modelOptions.push({
+        pid: pf.id,
+        model: llm.activeModel,
+        label: `${pf.name || "未命名"} · ${llm.activeModel}`,
+      });
+    }
   }
 
   async function onPickPortrait(
@@ -270,51 +429,240 @@ export default function SettingsPage() {
           </span>
         </label>
 
-        {/* ── LLM ───────────────────────────────────────── */}
+        {/* ── LLM profiles ─────────────────────────────── */}
         <fieldset className="flex flex-col gap-4">
-          <legend className={labelCls}>LLM 接口</legend>
-          <label className="flex flex-col gap-1">
-            <span className={helpCls}>endpoint · OpenAI 格式 chat completion</span>
-            <input
-              type="url"
-              value={llm.endpoint}
-              onChange={(e) => setLLM({ ...llm, endpoint: e.target.value })}
-              placeholder="https://api.openai.com/v1/chat/completions"
-              className={`${inputCls} font-mono text-sm`}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className={helpCls}>model · 模型名</span>
-            <input
-              type="text"
-              value={llm.model}
-              onChange={(e) => setLLM({ ...llm, model: e.target.value })}
-              placeholder="gpt-4o-mini"
-              className={`${inputCls} font-mono text-sm`}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className={helpCls}>API key · 仅存你本地浏览器</span>
-            <input
-              type="password"
-              value={llm.apiKey}
-              onChange={(e) => setLLM({ ...llm, apiKey: e.target.value })}
-              placeholder="sk-…"
-              autoComplete="off"
-            className={`${inputCls} font-mono text-sm`}
-          />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className={helpCls}>上下文长度 · 读取最近 N 条对话（0=不限）</span>
-            <input
-              type="number"
-              min={0}
-              max={999}
-              value={llm.maxContextMessages}
-              onChange={(e) => setLLM({ ...llm, maxContextMessages: Math.max(0, parseInt(e.target.value, 10) || 0) })}
-              className={`${inputCls} font-mono text-sm`}
-            />
-          </label>
+          <legend className={labelCls}>LLM 档案</legend>
+          <p className={helpCls}>
+            每个 provider 一条档案 (DeepSeek / OpenRouter / Claude …) · key 仅存你
+            本地浏览器 · 对话页输入框上方可随时切档案和模型, 不用回这里.
+          </p>
+
+          {llm.profiles.map((pf) => {
+            const expanded = expandedProfile === pf.id;
+            return (
+              <div
+                key={pf.id}
+                className="border border-current/20 px-4 py-3 flex flex-col gap-3"
+              >
+                <button
+                  type="button"
+                  onClick={() => setExpandedProfile(expanded ? null : pf.id)}
+                  className="flex items-center justify-between text-left"
+                >
+                  <span className="font-serif text-base">
+                    {pf.name || "未命名"}
+                    <span className="ml-3 text-[10px] tracking-widest uppercase text-muted-grey">
+                      {pf.format}
+                      {pf.models.length > 0 && ` · ${pf.models.length} models`}
+                      {llm.activeProfileId === pf.id && " · 默认"}
+                    </span>
+                  </span>
+                  <span className="text-muted-grey">{expanded ? "−" : "+"}</span>
+                </button>
+
+                {expanded && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <label className="flex flex-col gap-1">
+                        <span className={helpCls}>名字</span>
+                        <input
+                          type="text"
+                          value={pf.name}
+                          onChange={(e) => updateProfile(pf.id, { name: e.target.value })}
+                          onBlur={() => {
+                            if (!pf.name.trim() && pf.endpoint.trim()) {
+                              updateProfile(pf.id, { name: guessProviderName(pf.endpoint) });
+                            }
+                          }}
+                          placeholder="DeepSeek"
+                          className={`${inputCls} font-serif text-sm`}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className={helpCls}>格式</span>
+                        <select
+                          value={pf.format}
+                          onChange={(e) =>
+                            updateProfile(pf.id, {
+                              format: e.target.value as ProviderProfile["format"],
+                            })
+                          }
+                          className={`${inputCls} font-mono text-sm bg-transparent`}
+                        >
+                          <option value="openai">openai compat</option>
+                          <option value="anthropic">anthropic 原生</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label className="flex flex-col gap-1">
+                      <span className={helpCls}>
+                        endpoint · base URL 即可 (
+                        {pf.format === "anthropic"
+                          ? "例: https://api.anthropic.com"
+                          : "例: https://api.deepseek.com / https://openrouter.ai/api/v1"}
+                        )
+                      </span>
+                      <input
+                        type="url"
+                        value={pf.endpoint}
+                        onChange={(e) => updateProfile(pf.id, { endpoint: e.target.value })}
+                        placeholder={
+                          pf.format === "anthropic"
+                            ? "https://api.anthropic.com"
+                            : "https://api.openai.com/v1"
+                        }
+                        className={`${inputCls} font-mono text-sm`}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className={helpCls}>API key · 仅存你本地浏览器</span>
+                      <input
+                        type="password"
+                        value={pf.apiKey}
+                        onChange={(e) => updateProfile(pf.id, { apiKey: e.target.value })}
+                        placeholder="sk-…"
+                        autoComplete="off"
+                        className={`${inputCls} font-mono text-sm`}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className={helpCls}>模型 · 一行一个 (或右下「拉取」自动填)</span>
+                      <textarea
+                        value={pf.models.join("\n")}
+                        onChange={(e) =>
+                          updateProfile(pf.id, {
+                            models: e.target.value
+                              .split("\n")
+                              .map((s) => s.trim())
+                              .filter(Boolean),
+                          })
+                        }
+                        rows={Math.min(6, Math.max(2, pf.models.length + 1))}
+                        placeholder={"deepseek-chat\ndeepseek-reasoner"}
+                        className={`${inputCls} font-mono text-sm resize-y`}
+                      />
+                    </label>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => removeProfile(pf.id)}
+                        className="text-[10px] tracking-widest uppercase text-current/40 hover:text-current"
+                      >
+                        删档案
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onFetchModels(pf.id)}
+                        disabled={modelsBusy === pf.id}
+                        className={buttonCls}
+                        style={{ opacity: modelsBusy === pf.id ? 0.4 : 1 }}
+                      >
+                        {modelsBusy === pf.id ? "拉取中…" : "拉取模型列表"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+
+          <button type="button" onClick={addProfile} className={`${buttonCls} self-start`}>
+            ＋ 加档案
+          </button>
+
+          {modelOptions.length > 0 && (
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>默认档案 · 模型 (对话页里也能切)</span>
+              <select
+                value={activeKey}
+                onChange={(e) => {
+                  const [pid, ...rest] = e.target.value.split("::");
+                  setLLM((s) => ({ ...s, activeProfileId: pid, activeModel: rest.join("::") }));
+                }}
+                className={`${inputCls} font-mono text-sm bg-transparent`}
+              >
+                {modelOptions.map((o) => (
+                  <option key={`${o.pid}::${o.model}`} value={`${o.pid}::${o.model}`}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {/* ── sampling params ── */}
+          <div className="grid grid-cols-3 gap-4">
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>temperature</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={2}
+                value={llm.params.temperature}
+                onChange={(e) =>
+                  setLLM((s) => ({
+                    ...s,
+                    params: { ...s.params, temperature: Number(e.target.value) },
+                  }))
+                }
+                className={`${inputCls} font-mono text-sm`}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>max tokens</span>
+              <input
+                type="number"
+                step={128}
+                min={1}
+                value={llm.params.maxTokens}
+                onChange={(e) =>
+                  setLLM((s) => ({
+                    ...s,
+                    params: { ...s.params, maxTokens: Number(e.target.value) },
+                  }))
+                }
+                className={`${inputCls} font-mono text-sm`}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>top p · 空=不发</span>
+              <input
+                type="number"
+                step={0.05}
+                min={0}
+                max={1}
+                value={llm.params.topP ?? ""}
+                onChange={(e) =>
+                  setLLM((s) => ({
+                    ...s,
+                    params: {
+                      ...s.params,
+                      topP: e.target.value === "" ? undefined : Number(e.target.value),
+                    },
+                  }))
+                }
+                className={`${inputCls} font-mono text-sm`}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>上下文条数 · 0=不限</span>
+              <input
+                type="number"
+                step={1}
+                min={0}
+                max={999}
+                value={llm.maxContextMessages ?? 50}
+                onChange={(e) =>
+                  setLLM((s) => ({
+                    ...s,
+                    maxContextMessages: Math.max(0, parseInt(e.target.value, 10) || 0),
+                  }))
+                }
+                className={`${inputCls} font-mono text-sm`}
+              />
+            </label>
+          </div>
         </fieldset>
 
         <button type="submit" className={`${buttonCls} self-start`}>
@@ -367,6 +715,210 @@ export default function SettingsPage() {
           })}
         </div>
       </section>
+
+      {/* ── Send key ─────────────────────────────────── */}
+      <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">
+        <h2 className={labelCls}>发送键</h2>
+        <p className={helpCls}>
+          对话页输入框右边那一枚 · 昼夜各一张图 · 改完即时生效, 不用保存 ·
+          对话页的设置抽屉里也有同一排.
+        </p>
+
+        <div className="flex flex-col gap-3">
+          {(["day", "night"] as const).map((mode) => (
+            <div key={mode} className="flex items-center gap-3">
+              <span className={`${helpCls} w-8 shrink-0`}>{mode === "day" ? "昼" : "夜"}</span>
+              <div className="flex flex-wrap gap-2">
+                {SEND_KEY_PRESET_ORDER.map((key) => {
+                  const art = SEND_ART_PRESETS[key][mode];
+                  const on = sendKey.preset === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      title={SEND_ART_PRESETS[key].label}
+                      aria-label={`${mode === "day" ? "昼" : "夜"} · ${SEND_ART_PRESETS[key].label}`}
+                      onClick={() =>
+                        updateSendKey({ preset: key, customDay: null, customNight: null })
+                      }
+                      className="w-11 h-11 rounded-full border flex items-center justify-center relative overflow-hidden"
+                      style={{
+                        borderColor: on ? "currentColor" : "rgba(128,128,128,.35)",
+                        background: mode === "day" ? "#FBF6EE" : "#140E09",
+                      }}
+                    >
+                      {art ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={art.src}
+                          alt=""
+                          className="absolute inset-0.5 object-contain"
+                          style={{ filter: art.filter }}
+                        />
+                      ) : (
+                        <span
+                          className="text-[10px]"
+                          style={{ color: mode === "day" ? "#B04063" : "#E6CD96" }}
+                        >
+                          ✦
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className={helpCls}>
+          想用自己的图: 在对话页的设置抽屉里点那枚虚线圈 ↥ 上传, 昼夜各存各的 ·
+          图存在你自己浏览器里, 不上传.
+        </p>
+
+        <label className="flex items-center gap-3 mt-2">
+          <input
+            type="checkbox"
+            checked={sendKey.enterSends}
+            onChange={(e) => updateSendKey({ enterSends: e.target.checked })}
+          />
+          <span className="flex flex-col gap-1">
+            <span className={labelCls}>Enter 发送</span>
+            <span className={helpCls}>
+              勾上: Enter 发送, Shift+Enter 换行 · 不勾: Enter 换行, ⌘/Ctrl+Enter 发送 ·
+              中文输入法选字时的 Enter 两种都不发.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex flex-col gap-2 mt-2">
+          <span className={labelCls}>没打字时的深浅 · {Math.round(sendKey.idleOpacity * 100)}%</span>
+          <input
+            type="range"
+            min={20}
+            max={100}
+            step={5}
+            value={Math.round(sendKey.idleOpacity * 100)}
+            onChange={(e) => updateSendKey({ idleOpacity: Number(e.target.value) / 100 })}
+            // Without this the browser draws its own accent — a blue that has no
+            // business in this palette.
+            style={{ accentColor: "currentColor" }}
+          />
+          <span className={helpCls}>输入框空着的时候这一枚有多显眼.</span>
+        </label>
+      </section>
+
+      {/* ── Foyer (门厅 /) ──────────────────────────── */}
+      <form onSubmit={onSaveFoyer} className="mt-24 max-w-md mx-auto flex flex-col gap-6">
+        <h2 className={labelCls}>门厅</h2>
+        <p className={helpCls}>
+          首页那一屏 · 右下两枚印切昼夜与构图 (满窗 / 三联) · 左右划换窗换画 ·
+          都存你本地浏览器. 见{" "}
+          <a
+            href="https://github.com/marikagura/kimi-room/blob/main/docs/FOYER.md"
+            target="_blank"
+            rel="noreferrer"
+            className="underline-offset-4 hover:underline"
+          >
+            docs/FOYER.md
+          </a>
+          .
+        </p>
+
+        <label className="flex flex-col gap-2">
+          <span className={labelCls}>起算日</span>
+          <input
+            type="date"
+            value={foyer.since}
+            onChange={(e) => setFoyer((f) => ({ ...f, since: e.target.value }))}
+            className={`${inputCls} font-mono text-sm`}
+          />
+          <span className={helpCls}>
+            门厅上那个数从这天算起 · 当天是 0 · 留空 = 第一次打开门厅那天 (今天是{" "}
+            {todayISO()}).
+          </span>
+        </label>
+
+        <label className="flex flex-col gap-2">
+          <span className={labelCls}>门厅那句话</span>
+          <textarea
+            value={foyer.quote}
+            onChange={(e) => setFoyer((f) => ({ ...f, quote: e.target.value }))}
+            rows={2}
+            placeholder={FOYER_QUOTE_DEFAULT}
+            className={`${inputCls} font-serif text-sm resize-y`}
+          />
+          <span className={helpCls}>一行一行地断 · 断行就是排版, 不交给容器宽度决定.</span>
+        </label>
+
+        <label className="flex flex-col gap-2">
+          <span className={labelCls}>门口便签</span>
+          <input
+            type="text"
+            value={foyer.note}
+            onChange={(e) => setFoyer((f) => ({ ...f, note: e.target.value }))}
+            placeholder={FOYER_NOTE_DEFAULT}
+            className={`${inputCls} font-serif text-sm`}
+          />
+          <span className={helpCls}>压在 AD ALTERUM · P.S. 底下那张小纸片.</span>
+        </label>
+
+        <fieldset className="flex flex-col gap-3">
+          <legend className={labelCls}>天气</legend>
+          <p className={helpCls}>
+            走 Open-Meteo, 不要 key · 经纬度留空就整行不显示 · 城市名只是那行的标签.
+          </p>
+          <div className="grid grid-cols-3 gap-4">
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>地名</span>
+              <input
+                type="text"
+                value={foyer.wxLabel}
+                onChange={(e) => setFoyer((f) => ({ ...f, wxLabel: e.target.value }))}
+                placeholder="MINATO-KU"
+                className={`${inputCls} font-serif text-sm`}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>纬度</span>
+              <input
+                type="number"
+                step="any"
+                value={foyer.wxLat}
+                onChange={(e) => setFoyer((f) => ({ ...f, wxLat: e.target.value }))}
+                placeholder="35.658"
+                className={`${inputCls} font-mono text-sm`}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className={helpCls}>经度</span>
+              <input
+                type="number"
+                step="any"
+                value={foyer.wxLng}
+                onChange={(e) => setFoyer((f) => ({ ...f, wxLng: e.target.value }))}
+                placeholder="139.751"
+                className={`${inputCls} font-mono text-sm`}
+              />
+            </label>
+          </div>
+        </fieldset>
+
+        <label className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            checked={foyer.skip}
+            onChange={(e) => setFoyer((f) => ({ ...f, skip: e.target.checked }))}
+          />
+          <span className="flex flex-col gap-1">
+            <span className={labelCls}>跳过门厅</span>
+            <span className={helpCls}>勾上之后打开网址直接进 /room.</span>
+          </span>
+        </label>
+
+        <button type="submit" className={`${buttonCls} self-start`}>
+          保存门厅
+        </button>
+      </form>
 
       {/* ── Calendar meds preset ──────────────────── */}
       <section className="mt-24 max-w-md mx-auto flex flex-col gap-4">

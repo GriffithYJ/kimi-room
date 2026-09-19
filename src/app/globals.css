@@ -22,8 +22,21 @@
   --color-text: #d8d0c8;
   --color-muted-grey: #8a8a8a;
 
-  --font-serif: var(--font-cormorant), var(--font-noto-serif-jp), Georgia, serif;
-  --font-sans: var(--font-noto-sans-jp), system-ui, sans-serif;
+  /* 语义字体 token — 全站 UI 文本唯一真源. Tailwind class (font-serif /
+     font-sans / font-mono) 和 inline style 的 var(--font-*) 都指到这里.
+     serif 里 SC 排在 JP 前 — 简体字形优先, 假名由 JP 接; 没有 SC 时
+     「设」这类简化字会穿透到系统兜底, 和相邻字渲染成两种字体.
+     双语细排 (ephemera / atlas 的纸面) 直接用 :root 低层 token 分开控制. */
+  --font-serif: "Cormorant Garamond", "Noto Serif SC", "Songti SC", "STSong",
+    "Noto Serif JP", Georgia, serif;
+  /* 中文优先衬线 — 中文标题/正文不吃 Cormorant 的拉丁与数字字形
+     (乐谱中文标题 / 记忆卡 / 账目标签这类) */
+  --font-serif-cn: "Noto Serif SC", "Songti SC", "STSong", "Noto Serif JP",
+    serif;
+  --font-sans: "Noto Sans JP", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    monospace;
 }
 
 html,
@@ -196,6 +209,137 @@ a {
 }
 @media (prefers-reduced-motion: reduce) {
   [data-page-transition] {
+    animation: none !important;
+  }
+}
+
+/* ── The keyboard follows the system's light or dark ───────────────
+   A WKWebView keyboard reads the used color-scheme of the focused element
+   rather than the system setting itself; with the site never declaring one,
+   WebKit treats it as light-only and a reader in dark mode still gets a pale
+   keyboard. Declared only on the inputs that raise a keyboard, never on :root:
+   the site's own day and night is a separate, deliberate switch, and the UA
+   rendering of the other form controls (range, date, file) must not be pulled
+   around by the system either. These inputs all carry explicit background,
+   colour and placeholder colours, so this changes the keyboard and nothing
+   visible. */
+textarea,
+[contenteditable]:not([contenteditable="false"]),
+input:where(:not([type]), [type="text"], [type="search"], [type="email"], [type="url"], [type="password"], [type="tel"], [type="number"]) {
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  textarea,
+  [contenteditable]:not([contenteditable="false"]),
+  input:where(:not([type]), [type="text"], [type="search"], [type="email"], [type="url"], [type="password"], [type="tel"], [type="number"]) {
+    color-scheme: dark;
+  }
+}
+
+/* ── Foyer (the front door, /) ─────────────────────────────────────
+   Drawn against 402×874. At that width the stage is 1:1; narrower screens get
+   it at a fixed width, centred. The foyer is one screen and does not scroll. */
+.foyer-stage {
+  width: 100%;
+  max-width: 402px;
+  height: 100dvh;
+  margin: 0 auto;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  /* Since it does not scroll, dragging down on it can only be overscroll — and
+     in Safari, or in a PWA on the home screen, that is pull-to-refresh: turn a
+     few windows and the page reloads under you. touch-action: none hands every
+     gesture on this screen to the page itself (turning, tapping and swiping all
+     run on pointer events, so none of them are affected), and the browser stops
+     reading a downward drag as scrolling. */
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+/* The real gate on pull-to-refresh sits on the root scroller — closed only on a
+   page that has rendered the foyer, so every other page keeps it. :has() has
+   been supported since Safari 15.4. */
+html:has(.foyer-stage),
+html:has(.foyer-stage) body {
+  overscroll-behavior-y: none;
+  overscroll-behavior-x: none;
+}
+
+/* INTRARE — the word brightens under a pointer; the components inject the
+   colour for day or night. */
+.foyer-intrare-label {
+  transition: color .25s;
+}
+.foyer-intrare:hover .foyer-intrare-label {
+  color: var(--foyer-intrare-hover);
+}
+/* The two seals — quiet until touched, when the ring comes up to whichever
+   accent belongs to day or night. */
+.foyer-seal {
+  opacity: .5;
+  transition: opacity .25s;
+}
+.foyer-seal:hover {
+  opacity: 1;
+}
+.foyer-seal-ring {
+  transition: border-color .25s;
+}
+.foyer-seal:hover .foyer-seal-ring {
+  border-color: var(--foyer-seal-hover);
+}
+
+@keyframes foyer-fadeup {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes foyer-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes foyer-flick {
+  0%, 100% { opacity: .85; }
+  50% { opacity: .55; }
+}
+@keyframes foyer-sway {
+  from { transform: rotate(-1.6deg); }
+  to { transform: rotate(1.8deg); }
+}
+@keyframes foyer-dashflow {
+  to { stroke-dashoffset: -190; }
+}
+@keyframes foyer-drawin {
+  from { stroke-dashoffset: 150; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes foyer-glowp {
+  from { box-shadow: 0 0 0 0 rgba(178, 58, 110, 0); }
+  to { box-shadow: 0 0 16px 3px rgba(178, 58, 110, .3); }
+}
+@keyframes foyer-breath {
+  0% { transform: scale(1); opacity: .75; }
+  100% { transform: scale(1.07); opacity: 1; }
+}
+/* Gold dust, at night: a mote settles through the window, brightening as it
+   goes and fading out below. */
+@keyframes foyer-mote {
+  0% { transform: translateY(0); opacity: 0; }
+  12% { opacity: .8; }
+  82% { opacity: .45; }
+  100% { transform: translateY(290px); opacity: 0; }
+}
+
+/* The staggered entrance stays — it only moves and fades, it does not flash.
+   The long-running ornament loops — turning rings, swaying vines, breathing
+   glows, travelling dashes — stop under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .foyer-stage [style*="foyer-spin"],
+  .foyer-stage [style*="foyer-sway"],
+  .foyer-stage [style*="foyer-flick"],
+  .foyer-stage [style*="foyer-dashflow"],
+  .foyer-stage [style*="foyer-glowp"],
+  .foyer-stage [style*="foyer-breath"],
+  .foyer-stage [style*="foyer-mote"] {
     animation: none !important;
   }
 }

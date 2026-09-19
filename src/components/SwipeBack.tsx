@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 
 // iOS PWA standalone has no native swipe-back gesture. This client component
 // adds one: finger starts in the left 30px edge, drags right > 80px with
@@ -14,12 +15,20 @@ import { useEffect } from "react";
 //
 // Skip when there's nowhere to go back (history length 1) — avoids the
 // browser navigating off-site.
+//
+// Also off on the foyer at "/": it is the front door, so there is nothing
+// behind it, and it turns its windows with a left/right drag of its own that
+// starts wherever the finger lands — including the left edge.
 const EDGE_PX = 30;
 const TRIGGER_DX = 80;
 const MAX_DRIFT_Y = 50;
 
 export function SwipeBack() {
+  const pathname = usePathname();
+  const disabled = pathname === "/";
+
   useEffect(() => {
+    if (disabled) return;
     let startX: number | null = null;
     let startY: number | null = null;
     function onTouchStart(e: TouchEvent) {
@@ -55,6 +64,6 @@ export function SwipeBack() {
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, []);
+  }, [disabled]);
   return null;
 }

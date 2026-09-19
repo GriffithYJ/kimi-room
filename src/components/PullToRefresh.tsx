@@ -17,7 +17,11 @@ export function PullToRefresh() {
   // /chat is a position:fixed full-screen layout, so the window never scrolls
   // (window.scrollY stays 0) and PTR mis-detects "at top" on every touchstart —
   // dragging to scroll the message log would trigger a reload. Disable PTR there.
-  const disabled = pathname?.startsWith("/chat") || false;
+  //
+  // The foyer at "/" is one screen that never scrolls either, and it is dragged
+  // sideways to turn the windows — a slightly downward swipe would reload the
+  // page mid-gesture. Off there too.
+  const disabled = pathname === "/" || pathname?.startsWith("/chat") || false;
   const [pull, setPull] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const startY = useRef<number | null>(null);
@@ -130,7 +134,7 @@ export function PullToRefresh() {
               color: armed_
                 ? "var(--kimi-ptr-color-armed)"
                 : "var(--kimi-ptr-color)",
-              fontFamily: '"Cormorant Garamond", serif',
+              fontFamily: 'var(--font-serif)',
             }}
           >
             {refreshing ? "refreshing…" : armed_ ? "release" : "pull"}

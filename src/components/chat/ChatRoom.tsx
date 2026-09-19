@@ -1,15 +1,64 @@
-﻿"use client";
+"use client";
+
+// ARCVS chat.
+//
+// One screen in three readings: night (gold on near-black), day (rose on warm
+// paper) and either of those with round avatars beside the bubbles. Day and
+// night are the same tree under two palettes — the sun/moon control swaps the
+// palette object, nothing about layout moves. Avatars are a switch, not a
+// separate screen.
+//
+// Fixed meanings, applied to every element: rose is me and sits right, gold is
+// the other voice and sits left, grey is the system.
+//
+// Generation goes through ChatProvider (see lib/chat-provider.ts) — the browser
+// calling a model endpoint directly, or this deployment's Claude CLI. The UI
+// does not branch on which; picking a profile picks the backend.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { EmptyRose } from "@/components/EmptyRose";
-import { friendlyLLMError, getLLMConfig, isLLMConfigured, llmChat, llmGenerate, type ChatMessage as LLMChatMessage, type OpenAIToolDef } from "@/lib/llm-client";
+import { chatStore, memoryStore } from "@/lib/stores";
+import {
+  friendlyLLMError,
+  getLLMConfig,
+  llmGenerate,
+  loadLLMSettings,
+  setActiveModel,
+  type LLMSettings,
+  type OpenAIToolDef,
+} from "@/lib/llm-client";
+import {
+  isProviderConfigured,
+  probeP,
+  probeCodex,
+  pProfile,
+  codexProfile,
+  readActiveProviderChoice,
+  resolveProvider,
+  writeActiveProviderChoice,
+  type ChatTurn,
+  type PCapability,
+  type ToolEvent,
+  type Usage,
+} from "@/lib/chat-provider";
 import { buildSystemMessage, getSystemContextStats } from "@/lib/system-prompt";
-import { callCoreTool, readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
+import { readCoreChat, writeCoreChat, readCoreThreads, deleteCoreChat, callCoreTool, fetchCoreReentryContext, fetchCoreReentryDelta, subscribeCoreToolCalls } from "@/lib/kimi-core-client";
 import { isCoreBackend } from "@/lib/backend-mode";
+import { buildCoreContext, coreContextMode } from "@/lib/core-context";
 import { getRandomToolText } from "@/lib/tool-texts";
-// Module-level cache: fetch kimi-core MCP tool definitions for LLM function calling.
+
+// fork: module-level cache for kimi-core MCP tool definitions used by function calling
 let _toolDefsCache: Promise<OpenAIToolDef[]> | null = null;
 async function _fetchToolDefs(): Promise<OpenAIToolDef[]> {
   if (!_toolDefsCache) {
@@ -27,50 +76,163 @@ async function _fetchToolDefs(): Promise<OpenAIToolDef[]> {
   return _toolDefsCache;
 }
 
+// fork: reentry context bookkeeping (lazily read from localStorage inside the send path)
+let lastReentryTime = 0;
+let hasReentried = false;
+import {
+  chatImageUrl,
+  detectLink,
+  fetchLinkPreview,
+  putChatImage,
+  type ChatImage,
+  type LinkPreview,
+} from "@/lib/chat-media";
+import {
+  SEND_KEY_DEFAULTS,
+  customIdFor,
+  loadSendKeySettings,
+  resolveSendArt,
+  saveSendKeySettings,
+  type SendKeySettings,
+} from "@/lib/send-key-prefs";
+import {
+  ARCVS_KEYFRAMES,
+  FONT_CN,
+  FONT_LATIN,
+  ONUM,
+  paletteFor,
+  SEND_ART_PRESETS,
+  SEND_KEY_PRESET_ORDER,
+  type SendKeyPreset,
+  type ChatTheme,
+  type Palette,
+} from "./arcvs/tokens";
+import {
+  Actus,
+  ActionMarks,
+  Avatar,
+  Cogitatio,
+  CostBar,
+  ImageBubble,
+  LinkCard,
+  type CostStats,
+} from "./arcvs/parts";
+import { useFixedViewport, useViewportDebug, useVisualViewport } from "./arcvs/viewport";
+import {
+  BackChevron,
+  FourPointStar,
+  MoonMark,
+  PhotoMark,
+  RingGauge,
+  StopMark,
+  SunMark,
+} from "./arcvs/icons";
 
-// Grow a textarea to fit its content, capped at maxPx px.
-function useAutoResize(value: string, maxPx = 360) {
+// Grow a textarea to fit its content, between one line and maxPx px. Height is
+// zeroed before reading scrollHeight — "auto" leaves the element at its current
+// size in a flex row, so the measurement would only ever ratchet upward.
+//
+// The composer is uncontrolled (see `hasDraft` below), so this is driven by the
+// caller on input rather than by a rendered value.
+function useAutoResize(minPx = 20, maxPx = 160) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
+  const resize = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, maxPx)}px`;
-  }, [value, maxPx]);
-  return ref;
+    el.style.height = "0px";
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, minPx), maxPx)}px`;
+  }, [minPx, maxPx]);
+  // Once on mount, so the empty composer starts at its one-line height rather
+  // than at whatever the element would be without an inline height.
+  useLayoutEffect(resize, [resize]);
+  return [ref, resize] as const;
 }
 
 // ============================================
 // types
 // ============================================
 
-type ToolEvent = {
-  id: string;
-  name: string;
-  label: string;
-  arguments?: string;
-  result?: string; // full tool output text
-  preview?: string; // result preview "5 条" / "未找到" 等
-  status: "pending" | "done" | "error";
+// One candidate for a reply. The top-level content/thinking/cost/coreId mirror
+// the selected candidate — rendering, storage and core merge all read the top
+// level, and swipes is only the pool. A single-candidate reply has no pool.
+type SwipeVariant = {
+  content: string;
+  thinking?: string;
+  thinkingSec?: number;
+  cost?: Usage;
+  coreId?: string;
+  tools?: ToolEvent[];
+  session?: CliSession;
 };
+
+/**
+ * Which CLI session answered a turn, on the backends that run one.
+ *
+ * A CLI keeps the transcript on its own machine — the room hands it an id and
+ * gets text back, and nothing in between says whether the conversation was
+ * continued or begun again. So the answer is carried per reply: `resumed` for
+ * what happened, `sid` (the head of the session id) for which line it happened
+ * on. An unchanged sid across replies is the same conversation; a new one is the
+ * other side having started over.
+ */
+type CliSession = { resumed: boolean; sid: string };
+
+/**
+ * How much context one turn carried.
+ *
+ * The backend states it (`ctxTok`) when it knows, because the arithmetic is its
+ * own: one vendor counts fresh and cached input in separate fields to be added,
+ * another folds the cached part into the total already. Where nothing is stated
+ * the fields are summed — right for an endpoint that reports cache separately,
+ * and harmless for the many that report no cache at all.
+ *
+ * Reading only the fresh input field instead would show a long conversation as
+ * near-empty from its second turn on, since by then almost all of it is being
+ * served from cache.
+ */
+function contextTokens(u?: Usage): number {
+  if (!u) return 0;
+  if (typeof u.ctxTok === "number") return u.ctxTok;
+  return u.inTok + (u.cacheReadTok ?? 0) + (u.cacheCreateTok ?? 0);
+}
 
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  thinking?: string; // extended thinking 块 (opus 4.6 reasoning)
-  tools?: ToolEvent[]; // MCP tool 调用记录
-  cost?: { inTok: number; outTok: number }; // token usage from the LLM response (browser-direct; USD unknown — endpoint/model price varies)
-  ts: string; // ISO
-  coreId?: string; // kimi-core CHAT event id (core mode) — lets retry delete the exact row cross-device
+  thinking?: string;
+  thinkingSec?: number;
+  tools?: ToolEvent[];
+  cost?: Usage;
+  session?: CliSession;
+  ts: string;
+  coreId?: string;
+  swipes?: SwipeVariant[];
+  swipeIndex?: number;
+  /** A picture sent from the composer. Pixels live in IndexedDB. */
+  image?: ChatImage;
+  /** A link posted on its own, rendered as a card. */
+  link?: LinkPreview;
 };
-
-type ChatTheme = "day" | "night";
 
 type SessionState = {
   sessionId: string;
   startedAt: string;
   msgs: ChatMessage[];
+  /**
+   * One CLI session per backend, because they are different machines' idea of
+   * the same conversation and their ids are not interchangeable — handing a
+   * Claude session id to `codex exec resume` just fails.
+   */
+  cliSessions?: Partial<Record<"p" | "codex", string>>;
+  /**
+   * Which backend produced the last turn. A CLI session only knows the turns it
+   * ran itself, so after a switch its memory has a hole where the other backend
+   * spoke. Resuming is therefore allowed only when the last turn was this same
+   * backend; otherwise the turn starts a fresh CLI session with the visible
+   * transcript inlined, which is what "it should know what we just said" means.
+   */
+  lastKind?: "direct" | "p" | "codex";
 };
 
 // Merge core-sourced rows into the local timeline instead of wholesale-replacing
@@ -84,124 +246,33 @@ function mergeCoreRows(
   local: ChatMessage[],
   rows: { id: string; role: "user" | "assistant"; text: string; at: string }[],
 ): ChatMessage[] {
-  // Build set of paragraph-fragment IDs to detect multi-bubble replies
-  const isParaFrag = (m: ChatMessage) => typeof m.id === "string" && /-p\d+$/.test(m.id);
-  const merged: ChatMessage[] = [];
-  rows.forEach((r) => {
-    // Re-attach local-only fields: try exact match first (by coreId or role+content),
-    // then try matching paragraph fragments (local content is a subset of core text).
-    let prior = local.find(
+  const merged: ChatMessage[] = rows.map((r) => {
+    const prior = local.find(
       (m) => (m.coreId && m.coreId === r.id) || (m.role === r.role && m.content === r.text),
     );
-    if (!prior && r.role === "assistant") {
-      // Try paragraph-fragment matched: join all fragments with the same baseId
-      // and see if they reconstruct the core text exactly.
-      for (const m of local) {
-        if (!isParaFrag(m) || m.role !== r.role) continue;
-        const baseId = m.id.replace(/-p\d+$/, "");
-        const frags = local
-          .filter((x) => typeof x.id === "string" && x.id.startsWith(baseId))
-          .sort((a, b) => {
-            const na = parseInt((a.id ?? "").match(/-p(\d+)$/)?.[1] ?? "0");
-            const nb = parseInt((b.id ?? "").match(/-p(\d+)$/)?.[1] ?? "0");
-            return na - nb;
-          });
-        const combined = frags.map((x) => x.content).join("\n\n");
-        if (combined === r.text) {
-          prior = { ...frags[0], cost: frags[frags.length - 1]?.cost };
-          break;
-        }
-      }
-    }
-    // If this core row is covered by a multi-bubble paragraph group, skip adding
-    // the merged message ? display the paragraph fragments directly instead.
-    const skipCore = r.role === "assistant" && local.some(
-      (m) => isParaFrag(m) && m.role === r.role && r.text.includes(m.content),
-    );
-    if (!skipCore) {
-      merged.push({
-        id: `core-${r.id}`, // stable across rehydrates
-        coreId: r.id,
-        role: r.role,
-        content: r.text,
-        ts: r.at,
-        ...(prior?.thinking ? { thinking: prior.thinking } : {}),
-        ...(prior?.tools ? { tools: prior.tools } : {}),
-        ...(prior?.cost ? { cost: prior.cost } : {}),
-      });
-    }
+    return {
+      id: `core-${r.id}`,
+      coreId: r.id,
+      role: r.role,
+      content: r.text,
+      ts: r.at,
+      ...(prior?.thinking ? { thinking: prior.thinking, thinkingSec: prior.thinkingSec } : {}),
+      ...(prior?.tools ? { tools: prior.tools } : {}),
+      ...(prior?.cost ? { cost: prior.cost } : {}),
+      ...(prior?.session ? { session: prior.session } : {}),
+      ...(prior?.image ? { image: prior.image } : {}),
+      ...(prior?.link ? { link: prior.link } : {}),
+      ...(prior?.swipes ? { swipes: prior.swipes, swipeIndex: prior.swipeIndex } : {}),
+    };
   });
-  // Preserve unsynced optimistic messages + paragraph-fragment messages.
-  // Paragraph fragments always survive (regardless of timestamp) because they are
-  // local-only display artifacts that don't exist in core rows.
   const newestCoreAt = rows.length ? rows[rows.length - 1].at : "";
   for (const m of local) {
-    if (
-      (isParaFrag(m) && !merged.some((x) => x.content === m.content)) ||
-      (m.ts > newestCoreAt && !merged.some((x) => x.role === m.role && x.content === m.content))
-    ) {
+    if (m.ts > newestCoreAt && !merged.some((x) => x.role === m.role && x.content === m.content)) {
       merged.push(m);
     }
   }
   return merged;
 }
-
-// ============================================
-// theme tokens
-// ============================================
-
-type ChatPalette = {
-  bg: string;
-  ink: string;
-  inkSoft: string;
-  inkMute: string;
-  accent: string;
-  hairline: string;
-  inputBg: string;
-  inputInk: string;
-  bubbleBg: string; // user bubble background, CC 风格
-};
-
-const DAY: ChatPalette = {
-  bg: "#fbf5f0",
-  ink: "#2e2618",
-  inkSoft: "rgba(46,38,24,0.78)",
-  inkMute: "rgba(46,38,24,0.5)",
-  accent: "#8a6558",
-  hairline: "rgba(46,38,24,0.18)",
-  inputBg: "rgba(255,255,255,0.85)",
-  inputInk: "#2e2618",
-  bubbleBg: "rgba(58,42,28,0.08)",
-};
-
-const NIGHT: ChatPalette = {
-  bg: "#0a0506",
-  ink: "#ece2cc",
-  inkSoft: "rgba(236,226,204,0.84)",
-  inkMute: "rgba(236,226,204,0.46)",
-  accent: "#d4af6c",
-  hairline: "rgba(236,226,204,0.2)",
-  inputBg: "rgba(20,12,14,0.55)",
-  inputInk: "#ece2cc",
-  bubbleBg: "rgba(40,28,22,0.92)",
-};
-
-function autoTheme(): ChatTheme {
-  if (typeof window === "undefined") return "night";
-  const h = (new Date().getUTCHours() + 9) % 24;
-  return h >= 6 && h < 18 ? "day" : "night";
-}
-
-const FONT_STACK =
-  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Serif SC", "Helvetica Neue", system-ui, sans-serif';
-
-// ============================================
-// mock seed (Phase 1 — 等接 backend)
-// ============================================
-
-// Fresh /chat 显示空 — EmptyRose 占位. 之前是 placeholder 3 条 sample
-// 让 layout 看着不空, 现在 EmptyRose 更优雅.
-const MOCK: ChatMessage[] = [];
 
 // ============================================
 // localStorage keys
@@ -211,24 +282,139 @@ const HEADER_LABEL_KEY = "kimi-web:chat:headerLabel";
 const SESSION_KEY = "kimi-web:chat:session";
 const THEME_KEY = "kimi-web:chat:theme";
 const BG_KEY = "kimi-web:chat:bg";
+const BG_FIT_KEY = "kimi-web:chat:bgFit";
+const BG_SLOTS_KEY = "kimi-web:chat:bgSlots:v1";
+const BG_OPACITY_KEY = "kimi-web:chat:bgOpacity";
+const AVATAR_ON_KEY = "kimi-web:chat:avatars";
+const AVATAR_SRC_KEY = "kimi-web:chat:avatarIds";
+const SPEND_KEY = "kimi-web:chat:spend";
+const CONTEXT_MAX_KEY = "kimi-web:chat:contextMax";
+const FONT_SCALE_KEY = "kimi-web:chat:fontScale";
 
-// ============================================
-// background options (从 public/images/mood)
-// ============================================
+/**
+ * Body size. 12px is the original step; the rest scale off it. Bubble text and
+ * COGITATIO follow; the latin small-caps labels do not — those are a scale, not
+ * something to read, and enlarging them only breaks the rows apart.
+ */
+const FONT_SCALES = [
+  { id: 0.88, label: "小" },
+  { id: 1, label: "中" },
+  { id: 1.15, label: "大" },
+  { id: 1.32, label: "特大" },
+] as const;
+const BASE_FS = 12;
 
-const BG_OPTIONS = [
-  { id: "none", label: "无", url: null },
-  { id: "paris", label: "paris", url: "/images/mood/paris.jpg" },
-  { id: "vienna", label: "vienna", url: "/images/mood/vienna.jpg" },
-  { id: "ribbon", label: "ribbon", url: "/images/mood/ribbon.jpg" },
-  { id: "kintsugi", label: "kintsugi", url: "/images/mood/kintsugi-blossom.jpg" },
-  { id: "sakura-ink-1", label: "樱墨", url: "/images/mood/sakura-ink-1.jpg" },
-  { id: "lilies", label: "lilies", url: "/images/mood/lilies-stairs.jpg" },
-  { id: "peony", label: "peony", url: "/images/mood/peony-scroll.jpg" },
-  { id: "saturn-ink", label: "saturn", url: "/images/mood/saturn-ink.jpg" },
-  { id: "starfield", label: "starfield", url: "/images/mood/starfield-tent.jpg" },
-  { id: "white-rose", label: "rose", url: "/images/mood/white-rose.jpg" },
-];
+type BackgroundSlot = {
+  imageId: string | null;
+  label: string;
+};
+
+const BG_SLOT_COUNT = 6;
+const DEFAULT_BG_OPACITY = 20;
+
+function blankBackgroundSlots(): BackgroundSlot[] {
+  return Array.from({ length: BG_SLOT_COUNT }, (_, index) => ({
+    imageId: null,
+    label: `背景 ${index + 1}`,
+  }));
+}
+
+function readBackgroundSlots(raw: string | null): BackgroundSlot[] {
+  const blank = blankBackgroundSlots();
+  if (!raw) return blank;
+  try {
+    const saved = JSON.parse(raw) as unknown;
+    if (!Array.isArray(saved)) return blank;
+    return blank.map((fallback, index) => {
+      const value = saved[index];
+      if (!value || typeof value !== "object") return fallback;
+      const row = value as { imageId?: unknown; label?: unknown };
+      const label = typeof row.label === "string" ? row.label.trim().slice(0, 24) : "";
+      return {
+        imageId: typeof row.imageId === "string" && row.imageId ? row.imageId : null,
+        label: label || fallback.label,
+      };
+    });
+  } catch {
+    return blank;
+  }
+}
+
+function backgroundSlotId(index: number): string {
+  return `slot:${index}`;
+}
+
+function backgroundSlotIndex(id: string): number | null {
+  const match = /^slot:([0-5])$/.exec(id);
+  return match ? Number(match[1]) : null;
+}
+
+/** How a mood picture meets the screen. */
+type BgFit = "adapt" | "fill";
+
+function autoTheme(): ChatTheme {
+  if (typeof window === "undefined") return "night";
+  const h = new Date().getHours();
+  return h >= 6 && h < 18 ? "day" : "night";
+}
+
+/**
+ * One utterance, cut into bubbles at its blank lines.
+ *
+ * A wall of text is a letter, not speech. People say long things in pieces with
+ * pauses between them, so the break follows the paragraphing the writer already
+ * put there — no guessing at sentence ends, no fixed length, only the blank line
+ * they left themselves.
+ *
+ * The bracket corners belong to the group rather than each piece: top-left on
+ * the first, bottom-right on the last. One utterance is bracketed once.
+ *
+ * While streaming this falls out on its own — a new bubble appears when the text
+ * reaches the next blank line.
+ */
+function splitParagraphs(text: string): string[] {
+  // A rule on its own line — models like it as a separator — counts as a break
+  // and is not shown: a horizontal line has no business surfacing in a bubble.
+  const cut = text.replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, "\n");
+  const parts = cut.split(/\n{2,}/).map((t) => t.trim()).filter(Boolean);
+  return parts.length ? parts : [text];
+}
+
+/** How long a link scrape may hold up a turn before it is sent without one. */
+const LINK_WAIT_MS = 2500;
+
+/**
+ * What one message looks like to the model.
+ *
+ * The card is drawn for her — thumbnail, title, site all sit in the interface.
+ * The model sees none of that; it receives this string. So a scraped title has
+ * to be folded in here, or what arrives is a bare URL: not openable, not
+ * identifiable, guessable only from its own characters.
+ *
+ * The URL itself is not repeated — her own line already contains it.
+ *
+ * A picture is still only announced, not shown: every backend here takes a
+ * plain string, so there is nowhere to put the pixels yet.
+ */
+function turnText(m: { content: string; image?: ChatImage; link?: LinkPreview }): string {
+  if (m.link) {
+    const head = [m.link.title, m.link.site].filter(Boolean).join(" · ");
+    if (head) return m.content ? `${m.content}\n\n[link · ${head}]` : `[link · ${head}]\n${m.link.url}`;
+    return m.content || m.link.url;
+  }
+  if (!m.content && m.image) return "(图片)";
+  return m.content;
+}
+
+/** The head of a session id — enough to tell one line from another at a glance. */
+function sidHead(sessionId: string): string {
+  return sessionId.slice(0, 8);
+}
+
+function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 // ============================================
 // component
@@ -237,43 +423,119 @@ const BG_OPTIONS = [
 export function ChatRoom() {
   const [theme, setTheme] = useState<ChatTheme>("night");
   const [bgId, setBgId] = useState<string>("none");
+  const [bgFit, setBgFit] = useState<BgFit>("adapt");
+  const [bgSlots, setBgSlots] = useState<BackgroundSlot[]>(blankBackgroundSlots);
+  /** Which background slot is having its name edited, in place. */
+  const [renamingSlot, setRenamingSlot] = useState<number | null>(null);
+  const [sendKey, setSendKey] = useState<SendKeySettings>(SEND_KEY_DEFAULTS);
+  /** Object URL for a custom send key, resolved from IndexedDB like the background. */
+  const [sendKeyUrl, setSendKeyUrl] = useState<string | null>(null);
+  const sendKeyFileRef = useRef<HTMLInputElement>(null);
+  const sendKeySlotRef = useRef<"day" | "night">("day");
+  const [bgOpacity, setBgOpacity] = useState(DEFAULT_BG_OPACITY);
+  const [avatarsOn, setAvatarsOn] = useState(false);
+  const [avatarIds, setAvatarIds] = useState<{ me?: string; them?: string }>({});
+  const [avatarUrls, setAvatarUrls] = useState<{ me?: string; them?: string }>({});
   const [headerLabel, setHeaderLabel] = useState<string>("他");
   const [editingHeader, setEditingHeader] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
-  const [showBgPicker, setShowBgPicker] = useState(false);
+  const [showDrawer, setShowDrawer] = useState(false);
   const [sysStats, setSysStats] = useState<{
     spChars: number;
+    memInjectOn: boolean;
+    memTotalActive: number;
   } | null>(null);
-
-  // Load sys-prompt stats when drawer opens (re-fetch each time
-  // so user sees fresh count after editing /backstage/character + returning).
-  useEffect(() => {
-    if (!showBgPicker) return;
-    void getSystemContextStats().then(setSysStats);
-  }, [showBgPicker]);
 
   const [session, setSession] = useState<SessionState>(() => ({
     sessionId: `session-${Date.now()}`,
     startedAt: new Date().toISOString(),
-    msgs: MOCK,
+    msgs: [],
   }));
   const searchParams = useSearchParams();
-  const [draft, setDraft] = useState("");
-  const draftRef = useAutoResize(draft, 360);
+  // The composer is uncontrolled. Holding what is being typed in React state
+  // re-rendered this whole component — three thousand lines of chat, every
+  // message, every panel — on each keystroke. The text lives in the DOM node;
+  // only "is there anything in it" is state, and that flips twice a message
+  // rather than once a character.
+  const [draftRef, resizeDraft] = useAutoResize();
+  const [hasDraft, setHasDraft] = useState(false);
+
+  /** Write the composer's text, from code rather than from typing. */
+  const setDraftText = useCallback(
+    (value: string) => {
+      const el = draftRef.current;
+      if (el) el.value = value;
+      resizeDraft();
+      setHasDraft(value.trim().length > 0);
+    },
+    [draftRef, resizeDraft],
+  );
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // current thread id mirror — lets the focus-refresh handler read it without re-subscribing
+  const fileRef = useRef<HTMLInputElement>(null);
+  const avatarFileRef = useRef<HTMLInputElement>(null);
+  const bgFileRef = useRef<HTMLInputElement>(null);
+  const bgFileSlotRef = useRef(0);
+  /** Object URL for the active background slot; resolved from IndexedDB on load. */
+  const [ownBgUrl, setOwnBgUrl] = useState<string | undefined>(undefined);
+  const avatarSlotRef = useRef<"me" | "them">("me");
+
   const threadRef = useRef(session.sessionId);
-  const [lastReentryTime, setLastReentryTime] = useState(() => {
-    try { return Number(localStorage.getItem("kimi:lastReentry")) || 0; } catch { return 0; }
-  });
-  const [hasReentried, setHasReentried] = useState(() => {
-    try { return localStorage.getItem("kimi:hasReentried") === "true"; } catch { return false; }
-  });
-  const firstMountRef = useRef(true);
   useEffect(() => {
     threadRef.current = session.sessionId;
   }, [session.sessionId]);
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  // ── providers ──
+  const [llmSettings, setLlmSettings] = useState<LLMSettings | null>(null);
+  const [pCap, setPCap] = useState<PCapability | null>(null);
+  const [codexCap, setCodexCap] = useState<PCapability | null>(null);
+
+  // The chat is a fixed full-screen shell — keep the document from scrolling or
+  // rubber-banding under it.
+  useFixedViewport();
+  useVisualViewport();
+  const viewportReadout = useViewportDebug(searchParams.get("viewportDebug") === "1");
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [providerTick, setProviderTick] = useState(0); // re-read the choice after a pick
+  useEffect(() => {
+    setLlmSettings(loadLLMSettings());
+    void probeP().then(setPCap);
+    void probeCodex().then(setCodexCap);
+  }, []);
+  useEffect(() => {
+    const refresh = () => setLlmSettings(loadLLMSettings());
+    window.addEventListener("focus", refresh);
+    window.addEventListener("pageshow", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
+    };
+  }, []);
+
+  // ── streaming abort ──
+  const abortRef = useRef<AbortController | null>(null);
+  const thinkStartRef = useRef<number | null>(null);
+
+  // ── swipe → core 时间线的 debounced 同步 ──
+  const swipeSyncTimer = useRef<number | null>(null);
+  const pendingSwipeSync = useRef(false);
+
+  // ── cost bar ──
+  const [spendToday, setSpendToday] = useState<number | null>(null);
+  const [contextMax, setContextMax] = useState(200_000);
+  const [fontScale, setFontScale] = useState(1);
+
+
+  useEffect(() => {
+    if (!showDrawer) return;
+    void getSystemContextStats().then(setSysStats);
+  }, [showDrawer]);
 
   // load on mount
   useEffect(() => {
@@ -283,20 +545,83 @@ export function ChatRoom() {
       const t = localStorage.getItem(THEME_KEY);
       if (t === "day" || t === "night") setTheme(t);
       else setTheme(autoTheme());
-      const bg = localStorage.getItem(BG_KEY);
-      if (bg) setBgId(bg);
+      setSendKey(loadSendKeySettings());
+      const slots = readBackgroundSlots(localStorage.getItem(BG_SLOTS_KEY));
+      const savedBg = localStorage.getItem(BG_KEY) ?? "none";
+      let nextBg = "none";
+      const savedSlot = backgroundSlotIndex(savedBg);
+      if (savedSlot !== null && slots[savedSlot]?.imageId) {
+        nextBg = savedBg;
+      } else if (savedBg.startsWith("own:") && savedBg.length > 4 && !slots.some((slot) => slot.imageId)) {
+        // Migrate the old single custom background into the first fixed slot.
+        slots[0] = { ...slots[0], imageId: savedBg.slice(4) };
+        nextBg = backgroundSlotId(0);
+        localStorage.setItem(BG_SLOTS_KEY, JSON.stringify(slots));
+      }
+      setBgSlots(slots);
+      setBgId(nextBg);
+      if (savedBg !== nextBg) localStorage.setItem(BG_KEY, nextBg);
+      const fit = localStorage.getItem(BG_FIT_KEY);
+      if (fit === "adapt" || fit === "fill") setBgFit(fit);
+      const savedOpacity = localStorage.getItem(BG_OPACITY_KEY);
+      const opacity = savedOpacity === null ? Number.NaN : Number(savedOpacity);
+      if (Number.isFinite(opacity) && opacity >= 0 && opacity <= 100) setBgOpacity(opacity);
+      setAvatarsOn(localStorage.getItem(AVATAR_ON_KEY) === "1");
+      const cm = Number(localStorage.getItem(CONTEXT_MAX_KEY));
+      if (cm > 0) setContextMax(cm);
+      const fs = Number(localStorage.getItem(FONT_SCALE_KEY));
+      if (FONT_SCALES.some((f) => f.id === fs)) setFontScale(fs);
+      try {
+        const ids = JSON.parse(localStorage.getItem(AVATAR_SRC_KEY) ?? "{}") as {
+          me?: string;
+          them?: string;
+        };
+        setAvatarIds(ids);
+      } catch {}
+      try {
+        const spend = JSON.parse(localStorage.getItem(SPEND_KEY) ?? "{}") as {
+          day?: string;
+          usd?: number;
+        };
+        if (spend.day === todayKey() && typeof spend.usd === "number") setSpendToday(spend.usd);
+      } catch {}
+    } catch {}
+  }, []);
 
-      // URL param: ?session=<id> → resume thread from DB; ?new=1 → fresh
+  // Resolve avatar blobs → object urls. A slot may also hold a plain path
+  // ("/images/…") for a deployment that ships portraits in public/ instead of
+  // having someone pick them on the device.
+  useEffect(() => {
+    let alive = true;
+    const resolve = async (id?: string) => {
+      if (!id) return undefined;
+      if (id.startsWith("/") || id.startsWith("http")) return id;
+      return (await chatImageUrl(id)) ?? undefined;
+    };
+    void (async () => {
+      const next = { me: await resolve(avatarIds.me), them: await resolve(avatarIds.them) };
+      if (alive) setAvatarUrls(next);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [avatarIds]);
+
+  // thread resolution (URL param → core → localStorage)
+  useEffect(() => {
+    try {
       const sessionParam = searchParams.get("session");
       const newParam = searchParams.get("new");
 
       if (newParam === "1") {
-        // brand new thread, ignore localStorage
         setSession({
           sessionId: `session-${Date.now()}`,
           startedAt: new Date().toISOString(),
           msgs: [],
         });
+        try {
+          window.history.replaceState(null, "", window.location.pathname);
+        } catch {}
         return;
       }
 
@@ -306,49 +631,36 @@ export function ChatRoom() {
         //   ?session=X → open that thread       ?new=1 → fresh thread (handled above)
         //   no param   → open the MOST-RECENT thread (the `else` below)
         //
-        // Why most-recent (not localStorage device-local, not blank): tuned for the
-        // common personal setup — one person, a phone + a computer — so opening EITHER
-        // device lands on the latest conversation. A device's own localStorage can't
-        // know what the other device just wrote (it would open blank); querying core
-        // does. Assumes a single user (threads are not scoped per account; multi-user
-        // is out of scope, same as the engine).
-        //
         // ── DEPLOYER KNOB ── to change the no-param default, edit the `else` branch:
         //   • most-recent thread  — default, below (best for multi-device / one person)
         //   • always blank / new  — replace its body with: setSession((s) => ({ ...s, msgs: [] }))
         //   • device-local last   — read localStorage SESSION_KEY instead (single-device)
         const openThread = (tid: string) =>
           readCoreChat({ threadId: tid, take: 200 }).then((rows) => {
-            // Merge into local only when staying on the SAME thread (preserves
-            // cost/thinking/tools + unsynced optimistic msgs); switching threads
-            // starts from the core rows alone.
             setSession((s) => ({
               sessionId: tid,
               startedAt: rows[0]?.at ?? new Date().toISOString(),
+              cliSessions: s.sessionId === tid ? s.cliSessions : undefined,
+              lastKind: s.sessionId === tid ? s.lastKind : undefined,
               msgs:
                 s.sessionId === tid
                   ? mergeCoreRows(s.msgs, rows)
-                  : (() => {
-                      // After refresh s.sessionId != tid, try localStorage for local-only fields
-                      try {
-                        const ls = localStorage.getItem("kimi-web:chat:session");
-                        if (ls) {
-                          const p = JSON.parse(ls);
-                          if (p?.msgs?.length) return mergeCoreRows(p.msgs, rows);
-                        }
-                      } catch {}
-                      return rows.map((r, i) => ({ id: `core-${i}-${r.at}`, role: r.role, content: r.text, ts: r.at }));
-                    })(),
+                  : rows.map((r) => ({
+                      id: `core-${r.id}`,
+                      coreId: r.id,
+                      role: r.role,
+                      content: r.text,
+                      ts: r.at,
+                    })),
             }));
           });
         if (sessionParam) {
           void openThread(sessionParam).catch(() => {});
         } else {
-          // no param → open the most-recent thread (see DEPLOYER KNOB above to change)
           void readCoreThreads({ limit: 1 })
             .then((ths) => {
               if (ths[0]) return openThread(ths[0].threadId);
-              setSession((s) => ({ ...s, msgs: [] })); // no threads yet → fresh empty
+              setSession((s) => ({ ...s, msgs: [] }));
             })
             .catch(() => {});
         }
@@ -356,62 +668,139 @@ export function ChatRoom() {
       }
 
       if (sessionParam) {
-      // default: resume from localStorage
+        void chatStore()
+          .get(sessionParam)
+          .then((d) => {
+            if (!d) return;
+            const msgs: ChatMessage[] = d.messages.map((m, i) => ({
+              id: `m-${i}-${d.id}`,
+              role: m.role,
+              content: m.content,
+              ts: m.ts ?? d.createdAt,
+            }));
+            setSession({ sessionId: d.id, startedAt: d.createdAt, msgs });
+          })
+          .catch(() => {});
+        return;
+      }
+
       const ses = localStorage.getItem(SESSION_KEY);
       if (ses) {
         const parsed = JSON.parse(ses) as SessionState;
         if (parsed?.msgs?.length) setSession(parsed);
       }
-      }
     } catch {}
   }, [searchParams]);
 
-  // persist
-  useEffect(() => {
+  // Preferences are written where they change, not from an effect. Persisting
+  // in an effect means the mount-time defaults get written before the values
+  // read back from storage have landed, and a reload can come up with the
+  // defaults it just saved over.
+  const store = useCallback((key: string, value: string) => {
     try {
-      localStorage.setItem(HEADER_LABEL_KEY, headerLabel);
+      localStorage.setItem(key, value);
     } catch {}
-  }, [headerLabel]);
+  }, []);
+
+  const applyTheme = useCallback(
+    (t: ChatTheme) => {
+      setTheme(t);
+      store(THEME_KEY, t);
+    },
+    [store],
+  );
+  const applyHeaderLabel = useCallback(
+    (v: string) => {
+      setHeaderLabel(v);
+      store(HEADER_LABEL_KEY, v);
+    },
+    [store],
+  );
+  const applyBg = useCallback(
+    (id: string) => {
+      setBgId(id);
+      store(BG_KEY, id);
+    },
+    [store],
+  );
+  const applyBgFit = useCallback(
+    (f: BgFit) => {
+      setBgFit(f);
+      store(BG_FIT_KEY, f);
+    },
+    [store],
+  );
+  const applyBgOpacity = useCallback(
+    (value: number) => {
+      const next = Math.max(0, Math.min(100, Math.round(value)));
+      setBgOpacity(next);
+      store(BG_OPACITY_KEY, String(next));
+    },
+    [store],
+  );
+  const applyAvatarsOn = useCallback(
+    (v: boolean) => {
+      setAvatarsOn(v);
+      store(AVATAR_ON_KEY, v ? "1" : "0");
+    },
+    [store],
+  );
+  const applyAvatarIds = useCallback(
+    (next: { me?: string; them?: string }) => {
+      setAvatarIds(next);
+      store(AVATAR_SRC_KEY, JSON.stringify(next));
+    },
+    [store],
+  );
+
+  // The session does come through an effect — it changes from a dozen places —
+  // but the blank session the component mounts with is never written, so it
+  // cannot land on top of a stored conversation before that conversation has
+  // been read back.
+  const mountSessionId = useRef(session.sessionId);
   useEffect(() => {
-    try {
-      localStorage.setItem(THEME_KEY, theme);
-    } catch {}
-  }, [theme]);
-  useEffect(() => {
-    try {
-      localStorage.setItem(BG_KEY, bgId);
-    } catch {}
-  }, [bgId]);
-  useEffect(() => {
-    try {
-      if (firstMountRef.current) {
-        firstMountRef.current = false;
-      } else {
+    if (!(session.sessionId === mountSessionId.current && session.msgs.length === 0)) {
+      try {
         localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      }
-    } catch {}
-    // scroll to bottom on new message
+      } catch {}
+    }
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      // Anything dragged sideways before that axis was closed stays where it
+      // was left; this pulls it back.
+      if (scrollRef.current.scrollLeft !== 0) scrollRef.current.scrollLeft = 0;
     }
   }, [session]);
 
-  // core mode: re-hydrate the merged timeline when the window regains focus, so
-  // messages another device sent appear on return. Skipped mid-reply (don't clobber
-  // the in-flight turn) and when the tab is hidden.
+  // auto-backup chat session to ChatStore IDB. Debounced 2s after last change.
+  useEffect(() => {
+    if (session.msgs.length === 0) return;
+    const t = setTimeout(() => {
+      const firstUser = session.msgs.find((m) => m.role === "user");
+      void chatStore()
+        .put({
+          id: session.sessionId,
+          source: "cc-chat",
+          title: firstUser ? firstUser.content.slice(0, 60) : null,
+          messages: session.msgs.map((m) => ({ role: m.role, content: m.content, ts: m.ts })),
+          note: null,
+          theme,
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [session, theme]);
+
+  // core mode: re-hydrate on focus so another device's messages appear.
   useEffect(() => {
     if (!isCoreBackend()) return;
     function refresh() {
-      if (busy || document.visibilityState === "hidden") return;
+      if (busy || pendingSwipeSync.current || document.visibilityState === "hidden") return;
       const tid = threadRef.current;
       void readCoreChat({ threadId: tid, take: 200 })
         .then((rows) => {
           if (!rows.length) return;
-          setSession((s) =>
-            s.sessionId === tid
-              ? { ...s, msgs: mergeCoreRows(s.msgs, rows) }
-              : s,
-          );
+          setSession((s) => (s.sessionId === tid ? { ...s, msgs: mergeCoreRows(s.msgs, rows) } : s));
         })
         .catch(() => {});
     }
@@ -423,230 +812,366 @@ export function ChatRoom() {
     };
   }, [busy]);
 
-  const p = theme === "day" ? DAY : NIGHT;
-  const bg = useMemo(() => BG_OPTIONS.find((b) => b.id === bgId) ?? BG_OPTIONS[0], [bgId]);
+  const p = paletteFor(theme);
+  const activeBgSlotIndex = backgroundSlotIndex(bgId);
+  const activeBgSlot = activeBgSlotIndex === null ? undefined : bgSlots[activeBgSlotIndex];
+  const activeBgImageId = activeBgSlot?.imageId ?? null;
+  const bg = useMemo(
+    () => ({ id: bgId, label: activeBgSlot?.label ?? "无背景", url: ownBgUrl ?? null }),
+    [activeBgSlot?.label, bgId, ownBgUrl],
+  );
+
+  // Same as the background: the IndexedDB id survives a reload, the blob URL
+  // does not, so it is remade for whichever colourway is showing.
+  const sendKeyCustomId = customIdFor(sendKey, theme);
+  useEffect(() => {
+    if (!sendKeyCustomId) {
+      setSendKeyUrl(null);
+      return;
+    }
+    let alive = true;
+    void chatImageUrl(sendKeyCustomId).then((u) => {
+      if (alive) setSendKeyUrl(u);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [sendKeyCustomId]);
+
+  /** Write the send key's settings through, and keep other tabs in step. */
+  function applySendKey(next: SendKeySettings) {
+    setSendKey(next);
+    saveSendKeySettings(next);
+  }
+
+  /** Import a picture for one colourway's send key — downscaled into IndexedDB
+   *  like a chat image, never uploaded. */
+  async function pickSendKeyArt(file: File, slot: "day" | "night") {
+    if (!file.type.startsWith("image/")) return;
+    try {
+      const img = await putChatImage(file);
+      applySendKey({ ...sendKey, [slot === "day" ? "customDay" : "customNight"]: img.id });
+      if (slot === theme) setSendKeyUrl(img.url ?? null);
+    } catch {
+      flash("发送键的图没存上");
+    }
+  }
+
+  // The IndexedDB id survives reloads; the blob URL does not, so it is remade.
+  useEffect(() => {
+    if (!activeBgImageId) {
+      setOwnBgUrl(undefined);
+      return;
+    }
+    let alive = true;
+    void chatImageUrl(activeBgImageId).then((u) => {
+      if (alive) setOwnBgUrl(u ?? undefined);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [activeBgImageId]);
+  const sendArt = resolveSendArt(sendKey, theme, sendKeyUrl);
+  const provider = useMemo(
+    () => resolveProvider(pCap, codexCap),
+    // llmSettings / providerTick both stand for "the pick may have changed"
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pCap, codexCap, llmSettings, providerTick],
+  );
+
+  // Cost bar. Price only exists when the backend reports it — the -p backend
+  // does, a raw API endpoint mostly does not, and an absent reading is left out
+  // of the bar rather than faked as zero. Cache share rides with the price on
+  // each reply instead, since it is a per-turn reading, not a session one.
+  // The opened face wants the same readings at a different grain — the last turn
+  // split apart, and every turn added up — so both are computed here once rather
+  // than walking the messages again inside the bar.
+  const costStats: CostStats = useMemo(() => {
+    const costs = session.msgs.map((m) => m.cost).filter((c): c is Usage => !!c);
+    const lastCost = costs.length ? costs[costs.length - 1] : undefined;
+    const totalIn = contextTokens(lastCost);
+    const split = (u: Usage) => ({
+      cacheRead: u.cacheReadTok ?? 0,
+      cacheWrite: u.cacheCreateTok ?? 0,
+      // `inTok` is the uncached remainder on every backend this talks to; the
+      // cached parts are reported in their own fields.
+      fresh: u.inTok,
+      output: u.outTok,
+    });
+    return {
+      contextUsed: totalIn + (lastCost?.outTok ?? 0),
+      contextMax,
+      spendToday,
+      lastTurn: lastCost ? split(lastCost) : null,
+      thread: costs.length
+        ? costs.reduce(
+            (a, c) => {
+              const s = split(c);
+              return {
+                cacheRead: a.cacheRead + s.cacheRead,
+                cacheWrite: a.cacheWrite + s.cacheWrite,
+                fresh: a.fresh + s.fresh,
+                output: a.output + s.output,
+                turns: a.turns + 1,
+                planTurns: a.planTurns + (c.plan ? 1 : 0),
+              };
+            },
+            { cacheRead: 0, cacheWrite: 0, fresh: 0, output: 0, turns: 0, planTurns: 0 },
+          )
+        : null,
+    };
+  }, [session.msgs, contextMax, spendToday]);
+
+  function addSpend(usd: number) {
+    setSpendToday((prev) => {
+      const next = (prev ?? 0) + usd;
+      try {
+        localStorage.setItem(SPEND_KEY, JSON.stringify({ day: todayKey(), usd: next }));
+      } catch {}
+      return next;
+    });
+  }
+
+  const flash = useCallback((msg: string) => {
+    setNotice(msg);
+    window.setTimeout(() => setNotice((n) => (n === msg ? null : n)), 2200);
+  }, []);
 
   // ============================================
   // actions
   // ============================================
 
-  // V2 · client-side LLM call via lib/llm-client.ts (OpenAI-format chat
-  // completion). canon V1 streamed SSE w/ thinking + tool_call/tool_result
-  // 事件; V2 简化 non-streaming · 设置 LLM key 在 /settings 后 即可 chat.
+  function patchReply(replyId: string, patch: Partial<SwipeVariant>) {
+    setSession((s) => ({
+      ...s,
+      msgs: s.msgs.map((m) => {
+        if (m.id !== replyId) return m;
+        const next = { ...m, ...patch };
+        if (m.swipes && m.swipeIndex != null && m.swipes[m.swipeIndex]) {
+          const sw = [...m.swipes];
+          sw[m.swipeIndex] = { ...sw[m.swipeIndex], ...patch };
+          next.swipes = sw;
+        }
+        return next;
+      }),
+    }));
+  }
+
   async function streamReply(msgs: ChatMessage[], replyId: string, threadId?: string) {
-    if (!isLLMConfigured()) {
-      setSession((s) => ({
-        ...s,
-        msgs: s.msgs.map((m) =>
-          m.id === replyId
-            ? {
-                ...m,
-                content:
-                  "(LLM API key 没填 · 进 /backstage/settings 填 endpoint + key 才能 chat)",
-              }
-            : m,
-        ),
-      }));
+    if (!provider || !isProviderConfigured(pCap)) {
+      patchReply(replyId, {
+        content: "(还没有可用的后端 · 进 /backstage/settings 填 API key，或在服务端开 CLAUDE_P_ENABLED=1 用本机 claude -p)",
+      });
       setBusy(false);
       return;
     }
-    try {
-      // Core mode: pull global context from kimi-core
-      const cfg = getLLMConfig();
-      const collectedTools: ToolEvent[] = [];
-      let _tc = 0;
-      const unsubTools = subscribeCoreToolCalls((ev) => {
-        const id = "tool-" + (++_tc) + "-" + Date.now();
-        const entry = { id, name: ev.name, label: getRandomToolText(ev.name), arguments: ev.args ? JSON.stringify(ev.args) : undefined, result: ev.result, preview: ev.preview, status: ev.status };
-        const idx = collectedTools.findIndex((ct) => ct.name === ev.name);
-        if (idx >= 0) collectedTools[idx] = entry; else collectedTools.push(entry);
-        setSession((s) => ({
-          ...s,
-          msgs: s.msgs.map((m) =>
-            m.id === replyId ? { ...m, tools: [...collectedTools] } : m,
-          ),
-        }));
+    const ac = new AbortController();
+    abortRef.current = ac;
+    thinkStartRef.current = Date.now();
+
+    const acc = { text: "", thinking: "" };
+    const toolMap = new Map<string, ToolEvent>();
+    let flushTimer: number | null = null;
+    const flush = () => {
+      flushTimer = null;
+      patchReply(replyId, {
+        content: acc.text,
+        thinking: acc.thinking || undefined,
+        tools: toolMap.size ? [...toolMap.values()] : undefined,
       });
+    };
+    const scheduleFlush = () => {
+      if (flushTimer == null) flushTimer = window.setTimeout(flush, 80);
+    };
+    // fork: live kimi-core tool-call subscription (declared here so `finally` can
+    // always unsubscribe even when the send path throws early)
+    let unsubTools: (() => void) | undefined;
+
+    try {
+      const sys = await buildSystemMessage();
+
+      // fork: reentry context from kimi-core — full pull on first thread / first
+      // ever visit, then only the delta when more than 2h has elapsed.
       let reentryCtx = "";
-      if (isCoreBackend()) {
-        const isNewThread = msgs.length === 0;
-        const hoursGap = lastReentryTime
-          ? (Date.now() - lastReentryTime) / 3600_000
-          : 999;
-        if (isNewThread || !hasReentried) {
-          reentryCtx = await fetchCoreReentryContext(threadId);
-          if (reentryCtx) {
-            setHasReentried(true);
-            setLastReentryTime(Date.now());
-            try { localStorage.setItem("kimi:hasReentried", "true"); } catch {}
-            try { localStorage.setItem("kimi:lastReentry", String(Date.now())); } catch {}
+      if (isCoreBackend() && provider.kind === "direct") {
+        try {
+          if (!hasReentried) {
+            reentryCtx = await fetchCoreReentryContext(threadId);
+            if (reentryCtx) {
+              hasReentried = true;
+              lastReentryTime = Date.now();
+              try { localStorage.setItem("kimi:hasReentried", "true"); } catch {}
+              try { localStorage.setItem("kimi:lastReentry", String(lastReentryTime)); } catch {}
+            }
+          } else {
+            if (!lastReentryTime) {
+              try { lastReentryTime = Number(localStorage.getItem("kimi:lastReentry") || 0) || 0; } catch {}
+            }
+            const hoursGap = lastReentryTime ? (Date.now() - lastReentryTime) / 3600000 : 999;
+            if (hoursGap > 2) {
+              reentryCtx = await fetchCoreReentryDelta(threadId);
+              if (reentryCtx) {
+                lastReentryTime = Date.now();
+                try { localStorage.setItem("kimi:lastReentry", String(lastReentryTime)); } catch {}
+              }
+            }
           }
-        } else if (hoursGap > 2) {
-          reentryCtx = await fetchCoreReentryDelta(threadId);
-          if (reentryCtx) {
-            setLastReentryTime(Date.now());
-            try { localStorage.setItem("kimi:lastReentry", String(Date.now())); } catch {}
-          }
-        }
+        } catch {}
       }
-      let sys = await buildSystemMessage();
-      if (reentryCtx) {
-        sys.text = reentryCtx + (sys.text ? "\n\n---\n\n" + sys.text : "");
-      }
-      // Apply context length limit: keep the SP/reentry system message intact,
-      // but truncate conversation messages to the configured max.
+      if (reentryCtx) sys.text = reentryCtx + (sys.text ? "\n\n---\n\n" + sys.text : "");
+
+      // fork: max context messages — keep the system prompt, truncate the turns
+      const cfg = getLLMConfig();
       const maxMsgs = cfg.maxContextMessages > 0 ? cfg.maxContextMessages : Infinity;
-      const slicedMsgs = msgs.length > maxMsgs ? msgs.slice(msgs.length - maxMsgs) : msgs;
-      const llmMsgs: LLMChatMessage[] = [];
-      if (sys.text) {
-        llmMsgs.push({ role: "system", content: sys.text });
-      }
-      for (const m of slicedMsgs) {
-        llmMsgs.push({ role: m.role, content: m.content });
-      }
-      // --- Tool loop: let AI call kimi-core tools autonomously ---
-      const toolDefs = isCoreBackend() ? await _fetchToolDefs() : [];
-      let currentResult = await llmChat(
-        llmMsgs,
-        toolDefs.length > 0 ? { tools: toolDefs, tool_choice: "auto" } : {},
-      );
-      const MAX_TOOL_ROUNDS = 10;
-      let toolRound = 0;
-      while (currentResult.toolCalls?.length && toolRound < MAX_TOOL_ROUNDS) {
-        toolRound++;
-        llmMsgs.push({
-          role: "assistant" as const,
-          content: null,
-          tool_calls: currentResult.toolCalls,
-        });
-        for (const tc of currentResult.toolCalls) {
-          try {
-            const args = JSON.parse(tc.function.arguments);
-            const resultText = await callCoreTool(tc.function.name, args);
-            llmMsgs.push({
-              role: "tool" as const,
-              tool_call_id: tc.id,
-              content: resultText ?? "(empty result)",
-            });
-          } catch (e) {
-            llmMsgs.push({
-              role: "tool" as const,
-              tool_call_id: tc.id,
-              content: `Error: ${(e as Error).message}`,
-            });
-          }
-        }
-        currentResult = await llmChat(llmMsgs, { tools: toolDefs, tool_choice: "auto" });
-      }
-      // If we exhausted all rounds on tool calls, force one final text-only call
-      if (currentResult.toolCalls?.length) {
-        currentResult = await llmChat(llmMsgs, { tool_choice: "none" });
-      }
-      const text = currentResult.text?.trim() || "(空响应)";
-      const usage = (currentResult.raw as { usage?: { prompt_tokens?: number; completion_tokens?: number } } | undefined)?.usage;
-      const cost = usage
-        ? { inTok: usage.prompt_tokens ?? 0, outTok: usage.completion_tokens ?? 0 }
-        : undefined;
-      // Paragraph-by-paragraph multi-bubble rendering
-      const paragraphs = splitParagraphs(text);
-      if (paragraphs.length > 1 && text !== "(空响应)") {
-        // Rename initial replyId -> replyId-p0, fill first paragraph
-        const p0Id = replyId + "-p0";
-        setSession((s) => ({
-          ...s,
-          msgs: s.msgs.map((m) =>
-            m.id === replyId
-              ? { ...m, id: p0Id, content: paragraphs[0] }
-              : m,
-          ),
-        }));
-        await new Promise((r) => setTimeout(r, paragraphDelay(paragraphs[0])));
-        for (let i = 1; i < paragraphs.length; i++) {
-          const paraId = replyId + "-p" + i;
-          const paraMsg: ChatMessage = {
-            id: paraId,
-            role: "assistant",
-            content: paragraphs[i],
-            ts: new Date().toISOString(),
+      const filtered = msgs
+        .filter((m) => m.content.trim() || m.image || m.link);
+      const trimmed = filtered.length > maxMsgs ? filtered.slice(filtered.length - maxMsgs) : filtered;
+      const turns: ChatTurn[] = trimmed.map((m) => ({ role: m.role, content: turnText(m) }));
+
+      // kimi-core's layers ride with the turn on the direct backend only. A CLI
+      // backend answers inside the operator's own harness, which already brings
+      // whatever context that machine is configured with — sending a second copy
+      // through the system prompt would pay for the same material twice and let
+      // two versions of it disagree in one window.
+      const core =
+        provider.kind === "direct"
+          ? await buildCoreContext({
+              query: turns[turns.length - 1]?.content ?? "",
+              threadId: threadId ?? sessionRef.current.sessionId,
+            })
+          : null;
+      const system = [sys.text, core?.text].filter(Boolean).join("\n\n");
+
+      // fork: live kimi-core tool-call UI + function-calling wiring (direct only)
+      const collectedTools: ToolEvent[] = [];
+      let toolDefs: OpenAIToolDef[] = [];
+      if (provider.kind === "direct" && isCoreBackend()) {
+        toolDefs = await _fetchToolDefs();
+        unsubTools = subscribeCoreToolCalls((ev) => {
+          const id = "tool-" + collectedTools.length + "-" + Date.now();
+          const entry: ToolEvent = {
+            id,
+            name: ev.name,
+            label: getRandomToolText(ev.name),
+            arguments: ev.args ? JSON.stringify(ev.args) : undefined,
+            status: ev.status,
+            preview: ev.preview,
+            result: ev.result,
           };
-          setSession((s) => {
-            const prevIdx = s.msgs.findIndex((m) => m.id === replyId + "-p" + (i - 1));
-            if (prevIdx === -1) return s;
-            const newMsgs = [...s.msgs];
-            newMsgs.splice(prevIdx + 1, 0, paraMsg);
-            return { ...s, msgs: newMsgs };
-          });
-          if (i < paragraphs.length - 1) {
-            await new Promise((r) => setTimeout(r, paragraphDelay(paragraphs[i])));
-          }
-        }
-        // Attach cost to the last paragraph
-        if (cost) {
-          const lastParaId = replyId + "-p" + (paragraphs.length - 1);
-          setSession((s) => ({
-            ...s,
-            msgs: s.msgs.map((m) =>
-              m.id === lastParaId ? { ...m, cost } : m,
-            ),
-          }));
-        }
-      } else {
-        setSession((s) => ({
-          ...s,
-          msgs: s.msgs.map((m) =>
-            m.id === replyId ? { ...m, content: text, cost } : m,
-          ),
-        }));
+          const idx = collectedTools.findIndex((ct) => ct.name === ev.name);
+          if (idx >= 0) collectedTools[idx] = entry; else collectedTools.push(entry);
+          patchReply(replyId, { tools: [...collectedTools] });
+        });
       }
 
+      const r = await provider.send(turns, {
+        system: system || undefined,
+        signal: ac.signal,
+        resumeId:
+          (provider.kind === "p" || provider.kind === "codex") &&
+          sessionRef.current.lastKind === provider.kind
+            ? sessionRef.current.cliSessions?.[provider.kind]
+            : undefined,
+        ...(toolDefs.length
+          ? {
+              tools: toolDefs,
+              toolChoice: "auto" as const,
+              runTool: async (tc: { name: string; args: Record<string, unknown> }) =>
+                (await callCoreTool(tc.name, tc.args)) ?? "(empty result)",
+            }
+          : {}),
+        onEvent: (e) => {
+          if (e.type === "text") acc.text += e.delta;
+          else if (e.type === "thinking") acc.thinking += e.delta;
+          else if (e.type === "tool") toolMap.set(e.tool.id, e.tool);
+          else if (e.type === "session") {
+            const sid = e.sessionId;
+            const k = provider.kind;
+            if (k === "p" || k === "codex") {
+              // Shown from the moment it is known rather than at the end: which
+              // session answered is most worth seeing while the reply is still
+              // arriving, not after.
+              patchReply(replyId, { session: { resumed: e.resumed, sid: sidHead(sid) } });
+              setSession((s) =>
+                s.cliSessions?.[k] === sid
+                  ? s
+                  : { ...s, cliSessions: { ...s.cliSessions, [k]: sid } },
+              );
+            }
+          }
+          scheduleFlush();
+        },
+      });
+
+      if (flushTimer != null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const text = r.text?.trim() || "(空响应)";
+      const thinkingSec = thinkStartRef.current
+        ? Math.max(0, Math.round((Date.now() - thinkStartRef.current) / 1000))
+        : undefined;
+      patchReply(replyId, {
+        content: text,
+        thinking: r.thinking || acc.thinking || undefined,
+        thinkingSec,
+        cost: r.usage,
+        tools: r.tools ?? (toolMap.size ? [...toolMap.values()] : undefined),
+        ...(r.sessionId && r.resumed !== undefined
+          ? { session: { resumed: r.resumed, sid: sidHead(r.sessionId) } }
+          : {}),
+      });
+      // A plan turn reports a price too, but it is what the turn would have cost
+      // on a metered key — no money moved. Adding it to today's total would
+      // invent spending, so IMPENSA counts only what is actually billed.
+      if (r.usage?.costUsd && !r.usage.plan) addSpend(r.usage.costUsd);
+      if (r.sessionId && (provider.kind === "p" || provider.kind === "codex")) {
+        const sid = r.sessionId;
+        const k = provider.kind;
+        setSession((s) =>
+          s.cliSessions?.[k] === sid ? s : { ...s, cliSessions: { ...s.cliSessions, [k]: sid } },
+        );
+      }
+      setSession((s) => (s.lastKind === provider.kind ? s : { ...s, lastKind: provider.kind }));
+
       // Await the core persist before `finally` clears busy: while busy is true
-      // the focus/visibility refresh bails (see its guard), so this closes the
-      // window where a refresh could read core (without this reply yet) and drop
-      // the just-rendered message. writeCoreChat swallows its own errors.
-      if (currentResult.text?.trim()) {
-        const coreId = await writeCoreChat("assistant", currentResult.text.trim(), threadId);
-        // tag the just-rendered reply with its core row id so retryLast can delete it
-        if (coreId) {
-          // Try replyId first, fall back to replyId-p0 (paragraph mode)
-          const para0Id = replyId + "-p0";
-          setSession((s) => ({
-            ...s,
-            msgs: s.msgs.map((m) => (m.id === replyId || m.id === para0Id ? { ...m, coreId } : m)),
-          }));
-        }
-        // Fire-and-forget: let kimi-core analyze this exchange for state/event recording
-        const lastMsg = msgs[msgs.length - 1];
-        if (lastMsg?.role === "user") {
-          callCoreTool("chat_postprocess", {
-            threadId: threadId || session.sessionId,
-            userMessage: lastMsg.content,
-            assistantMessage: currentResult.text,
-          }).catch(() => {});
-        }
-        unsubTools();
+      // the focus/visibility refresh bails, so this closes the window where a
+      // refresh could read core (without this reply yet) and drop the message.
+      if (r.text?.trim()) {
+        const coreId = await writeCoreChat("assistant", r.text.trim(), threadId);
+        if (coreId) patchReply(replyId, { coreId });
       }
     } catch (e) {
-      console.error("[chat:llm]", e);
+      if (flushTimer != null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if ((e as Error)?.name === "AbortError") {
+        patchReply(replyId, {
+          content: acc.text || "(停了 · 回拨或重来一次)",
+          thinking: acc.thinking || undefined,
+        });
+        return;
+      }
+      console.error("[chat:provider]", e);
       const fe = friendlyLLMError(e);
-      setSession((s) => ({
-        ...s,
-        msgs: s.msgs.map((m) =>
-          m.id === replyId
-            ? {
-                ...m,
-                content: `⚠ ${fe.title}\n\n${fe.detail}\n\n→ ${fe.hint}`,
-              }
-            : m,
-        ),
-      }));
+      patchReply(replyId, { content: `⚠ ${fe.title}\n\n${fe.detail}\n\n→ ${fe.hint}` });
     } finally {
+      try { unsubTools?.(); } catch {}
+      abortRef.current = null;
+      thinkStartRef.current = null;
       setBusy(false);
     }
   }
 
+  function stopStreaming() {
+    abortRef.current?.abort();
+  }
+
   async function send() {
-    const text = draft.trim();
+    const text = (draftRef.current?.value ?? "").trim();
     if (!text || busy) return;
+    const linkUrl = detectLink(text);
     const userMsg: ChatMessage = {
       id: `m-${Date.now()}`,
       role: "user",
@@ -662,12 +1187,37 @@ export function ChatRoom() {
       ts: new Date().toISOString(),
     };
     setSession((s) => ({ ...s, msgs: [...nextMsgs, replyMsg] }));
-    setDraft("");
+    setDraftText("");
     setBusy(true);
+
+    // Scraped once, used twice: the card is drawn for her, and the title also
+    // has to travel with this turn — otherwise the model receives a bare URL it
+    // cannot open and cannot identify.
+    //
+    // Briefly awaited rather than awaited outright: a slow site should not hold
+    // up her message, so past the deadline the turn goes without it and the
+    // title only lands in the card.
+    let msgs = nextMsgs;
+    if (linkUrl) {
+      const job = fetchLinkPreview(linkUrl).then((preview) => {
+        if (preview) {
+          setSession((s) => ({
+            ...s,
+            msgs: s.msgs.map((m) => (m.id === userMsg.id ? { ...m, link: preview } : m)),
+          }));
+        }
+        return preview;
+      });
+      const preview = await Promise.race([
+        job,
+        new Promise<null>((r) => setTimeout(() => r(null), LINK_WAIT_MS)),
+      ]);
+      if (preview) {
+        msgs = nextMsgs.map((m) => (m.id === userMsg.id ? { ...m, link: preview } : m));
+      }
+    }
+
     const threadId = session.sessionId;
-    // Fire-and-forget with an idempotency key (kimi-core dedupes on it), then tag
-    // the local message with its core row id so mergeCoreRows matches by id
-    // instead of falling back to role+content (which misfires on repeated text).
     void writeCoreChat("user", text, threadId).then((coreId) => {
       if (coreId) {
         setSession((s) => ({
@@ -676,55 +1226,322 @@ export function ChatRoom() {
         }));
       }
     });
-    await streamReply(nextMsgs, replyId, threadId);
+    await streamReply(msgs, replyId, threadId);
+  }
+
+  async function pickImage(file: File) {
+    if (!file.type.startsWith("image/")) return;
+    setUploading(0);
+    try {
+      const img = await putChatImage(file, (f) => setUploading(f));
+      const msg: ChatMessage = {
+        id: `m-${Date.now()}`,
+        role: "user",
+        content: "",
+        image: img,
+        ts: new Date().toISOString(),
+      };
+      setSession((s) => ({ ...s, msgs: [...s.msgs, msg] }));
+    } catch (e) {
+      console.error("[chat:image]", e);
+      flash("图片没存上 · 再选一次");
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  /** Import a picture into a fixed background slot. It is downscaled into
+   *  IndexedDB like a chat image and never uploaded. */
+  async function pickBackground(file: File, slotIndex: number) {
+    if (!file.type.startsWith("image/")) return;
+    try {
+      const img = await putChatImage(file);
+      setBgSlots((current) => {
+        const next = current.map((slot, index) =>
+          index === slotIndex ? { ...slot, imageId: img.id } : slot,
+        );
+        store(BG_SLOTS_KEY, JSON.stringify(next));
+        return next;
+      });
+      setOwnBgUrl(img.url);
+      applyBg(backgroundSlotId(slotIndex));
+    } catch {
+      flash("背景没存上");
+    }
+  }
+
+  /** Open the name for editing in place. window.prompt used to do this, but a
+   *  PWA in standalone mode may never show it, which loses the gesture with no
+   *  sign that anything happened. */
+  function renameBackground(slotIndex: number) {
+    if (!bgSlots[slotIndex]?.imageId) return;
+    setRenamingSlot(slotIndex);
+  }
+
+  function commitRename(slotIndex: number, value: string) {
+    setRenamingSlot(null);
+    const label = value.trim().slice(0, 24);
+    if (!label || label === bgSlots[slotIndex]?.label) return;
+    setBgSlots((current) => {
+      const next = current.map((item, index) => (index === slotIndex ? { ...item, label } : item));
+      store(BG_SLOTS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  async function pickAvatar(file: File) {
+    if (!file.type.startsWith("image/")) return;
+    try {
+      const img = await putChatImage(file);
+      applyAvatarIds({ ...avatarIds, [avatarSlotRef.current]: img.id });
+    } catch {
+      flash("头像没存上");
+    }
   }
 
   function copyMsg(id: string) {
     const m = session.msgs.find((x) => x.id === id);
     if (!m) return;
-    void navigator.clipboard.writeText(m.content).catch(() => {});
+    void navigator.clipboard
+      .writeText(m.content || m.link?.url || "")
+      .then(() => flash("已复制"))
+      .catch(() => {});
   }
 
-  async function retryLast() {
+  // Re-roll the last reply. The old text goes into the candidate pool rather
+  // than being lost; the new one streams in as a fresh candidate.
+  // Core mode keeps only the selected candidate on the timeline: the old row is
+  // deleted, the new one written when it lands, and swiping back re-syncs.
+  async function regenerate(msgId?: string) {
     if (busy) return;
-    // 删掉最后一条 assistant, 用其前的 history (含最后一条 user) 重 fire.
-    // Core mode: also delete the stale reply's row in kimi-core (by its coreId) so the
-    // bad answer doesn't linger in the cross-device timeline / digest, and the retry
-    // replaces it instead of appending a second reply other devices keep seeing.
-    const rev = [...session.msgs].reverse();
-    const lastAsstRevIdx = rev.findIndex((m) => m.role === "assistant");
-    if (lastAsstRevIdx === -1) return;
-    let removeAt = session.msgs.length - 1 - lastAsstRevIdx;
-    const lastAsst = session.msgs[removeAt];
-    // If the last assistant is part of a paragraph group (id ends with -p\d+),
-    // walk backward to find the FIRST message in that group (p0)
-    const paraMatch = lastAsst.id?.match(/^(.*)-p\d+$/);
-    if (paraMatch) {
-      const baseId = paraMatch[1];
-      for (let i = removeAt; i >= 0; i--) {
-        const m = session.msgs[i];
-        if (m.id && m.id.startsWith(baseId + "-p")) {
-          removeAt = i;
-        } else {
-          break;
-        }
-      }
-    }
-    const staleCoreId = session.msgs[removeAt]?.coreId;
-    if (staleCoreId) void deleteCoreChat(staleCoreId);
-    const historyMsgs = session.msgs.slice(0, removeAt);
+    const at = msgId
+      ? session.msgs.findIndex((m) => m.id === msgId)
+      : session.msgs.length - 1 - [...session.msgs].reverse().findIndex((m) => m.role === "assistant");
+    if (at < 0 || at >= session.msgs.length) return;
+    const cur = session.msgs[at];
+    if (cur.role !== "assistant") return;
+    const historyMsgs = session.msgs.slice(0, at);
     if (!historyMsgs.length) return;
 
-    const replyId = `m-${Date.now()}`;
-    const replyMsg: ChatMessage = {
-      id: replyId,
-      role: "assistant",
-      content: "",
-      ts: new Date().toISOString(),
-    };
-    setSession((s) => ({ ...s, msgs: [...historyMsgs, replyMsg] }));
+    const pool: SwipeVariant[] =
+      cur.swipes ??
+      (cur.content
+        ? [
+            {
+              content: cur.content,
+              thinking: cur.thinking,
+              thinkingSec: cur.thinkingSec,
+              cost: cur.cost,
+              coreId: cur.coreId,
+              tools: cur.tools,
+              session: cur.session,
+            },
+          ]
+        : []);
+    const swipes = [...pool, { content: "" }];
+    const swipeIndex = swipes.length - 1;
+
+    if (cur.coreId) {
+      void deleteCoreChat(cur.coreId);
+      const stale = cur.coreId;
+      for (const v of swipes) if (v.coreId === stale) v.coreId = undefined;
+    }
+
+    setSession((s) => ({
+      ...s,
+      msgs: [
+        ...historyMsgs,
+        {
+          ...cur,
+          content: "",
+          thinking: undefined,
+          thinkingSec: undefined,
+          cost: undefined,
+          tools: undefined,
+          coreId: undefined,
+          session: undefined,
+          swipes,
+          swipeIndex,
+        },
+      ],
+    }));
     setBusy(true);
-    await streamReply(historyMsgs, replyId, session.sessionId);
+    await streamReply(historyMsgs, cur.id, session.sessionId);
+  }
+
+  function switchSwipe(msgId: string, dir: 1 | -1) {
+    if (busy) return;
+    const m = session.msgs.find((x) => x.id === msgId);
+    if (!m) return;
+    const pool = m.swipes;
+    if (!pool || pool.length === 0) {
+      if (dir === 1) void regenerate(msgId);
+      return;
+    }
+    const cur = m.swipeIndex ?? 0;
+    const next = cur + dir;
+    if (next < 0) return;
+    if (next >= pool.length) {
+      void regenerate(msgId);
+      return;
+    }
+    const v = pool[next];
+    setSession((s) => ({
+      ...s,
+      msgs: s.msgs.map((x) =>
+        x.id === msgId
+          ? {
+              ...x,
+              content: v.content,
+              thinking: v.thinking,
+              thinkingSec: v.thinkingSec,
+              cost: v.cost,
+              tools: v.tools,
+              coreId: v.coreId,
+              session: v.session,
+              swipeIndex: next,
+            }
+          : x,
+      ),
+    }));
+    scheduleSwipeSync(msgId);
+  }
+
+  // 2s after the last switch (so a run of taps collapses into one), align the
+  // core timeline with the selected candidate: delete rows left by the others,
+  // write one for the selection if it has none. pendingSwipeSync blocks the
+  // focus refresh so an old row cannot come back over the new selection.
+  function scheduleSwipeSync(msgId: string) {
+    if (!isCoreBackend()) return;
+    pendingSwipeSync.current = true;
+    if (swipeSyncTimer.current != null) clearTimeout(swipeSyncTimer.current);
+    swipeSyncTimer.current = window.setTimeout(() => {
+      swipeSyncTimer.current = null;
+      const s = sessionRef.current;
+      const m = s.msgs.find((x) => x.id === msgId);
+      if (!m || !m.swipes) {
+        pendingSwipeSync.current = false;
+        return;
+      }
+      const idx = m.swipeIndex ?? 0;
+      const staleIds = m.swipes.filter((v, i) => i !== idx && v.coreId).map((v) => v.coreId!);
+      for (const cid of staleIds) void deleteCoreChat(cid);
+      if (staleIds.length) {
+        setSession((prev) => ({
+          ...prev,
+          msgs: prev.msgs.map((x) =>
+            x.id === msgId && x.swipes
+              ? {
+                  ...x,
+                  swipes: x.swipes.map((v, i) =>
+                    i !== (x.swipeIndex ?? 0) ? { ...v, coreId: undefined } : v,
+                  ),
+                }
+              : x,
+          ),
+        }));
+      }
+      if (!m.coreId && m.content.trim()) {
+        void writeCoreChat("assistant", m.content.trim(), s.sessionId)
+          .then((coreId) => {
+            if (coreId) patchReply(msgId, { coreId });
+          })
+          .finally(() => {
+            pendingSwipeSync.current = false;
+          });
+      } else {
+        pendingSwipeSync.current = false;
+      }
+    }, 2000);
+  }
+
+  /**
+   * FVRCA — branch. Everything up to and including this message becomes a new
+   * thread and the view moves there; the original is untouched and still in the
+   * history list. No confirmation: nothing is lost.
+   */
+  async function forkFrom(msgId: string) {
+    const at = session.msgs.findIndex((m) => m.id === msgId);
+    if (at < 0) return;
+    const kept = session.msgs.slice(0, at + 1).map((m, i) => ({
+      ...m,
+      id: `fk-${i}-${Date.now()}`,
+      coreId: undefined,
+    }));
+    const newId = `session-${Date.now()}`;
+    // A branch starts its own CLI session: resuming the parent's would make the
+    // model continue the transcript we just cut away from.
+    setSession({
+      sessionId: newId,
+      startedAt: new Date().toISOString(),
+      msgs: kept,
+      cliSessions: undefined,
+      lastKind: undefined,
+    });
+    if (isCoreBackend()) {
+      for (const m of kept) {
+        if (m.content.trim()) await writeCoreChat(m.role, m.content.trim(), newId);
+      }
+    }
+    flash("分叉了 · 这是新的一支");
+  }
+
+  /**
+   * RETRO — rewind. Drops this reply and everything after it, and puts the
+   * message that prompted it back in the composer. The one action that asks
+   * first, because it removes turns.
+   */
+  function rewindTo(msgId: string) {
+    const at = session.msgs.findIndex((m) => m.id === msgId);
+    if (at < 0) return;
+    const dropped = session.msgs.length - at;
+    if (!confirm(`回拨到这里 · 之后的 ${dropped} 条会去掉 (自己那句回到输入框). 确定?`)) return;
+
+    // Walk back to the user turn that produced this reply, so rewinding lands
+    // with that text editable rather than re-sending it blind.
+    let cut = at;
+    let restored = "";
+    for (let i = at; i >= 0; i--) {
+      if (session.msgs[i].role === "user") {
+        cut = i;
+        restored = session.msgs[i].content;
+        break;
+      }
+    }
+    const removed = session.msgs.slice(cut);
+    for (const m of removed) {
+      if (m.coreId) void deleteCoreChat(m.coreId);
+      for (const v of m.swipes ?? []) if (v.coreId) void deleteCoreChat(v.coreId);
+    }
+    setSession((s) => ({
+      ...s,
+      msgs: s.msgs.slice(0, cut),
+      // The CLI session still holds the removed turns; drop the handle so the
+      // next send starts a session that matches what is on screen.
+      cliSessions: undefined,
+      lastKind: undefined,
+    }));
+    if (restored) setDraftText(restored);
+  }
+
+  /**
+   * A fresh window and nothing else: no summary, no memory write, no backend.
+   * The old session stays in the chat store, so the history page can reach it —
+   * nothing is lost, which is why there is no confirm.
+   */
+  function freshWindow() {
+    setSession({
+      sessionId: `session-${Date.now()}`,
+      startedAt: new Date().toISOString(),
+      msgs: [
+        {
+          id: `m-${Date.now()}`,
+          role: "assistant",
+          content: "新窗. 接着说.",
+          ts: new Date().toISOString(),
+        },
+      ],
+    });
   }
 
   async function newWindow() {
@@ -737,11 +1554,9 @@ export function ChatRoom() {
     setBusy(true);
     try {
       let title: string | null = null;
-      if (session.msgs.length >= 2 && isLLMConfigured()) {
+      if (session.msgs.length >= 2 && isProviderConfigured(pCap)) {
         try {
-          const transcript = session.msgs
-            .map((m) => `[${m.role}] ${m.content}`)
-            .join("\n\n");
+          const transcript = session.msgs.map((m) => `[${m.role}] ${m.content}`).join("\n\n");
           const summary = await llmGenerate(
             `请用中文 1-2 句话总结以下对话, 不超过 40 字, 直接给标题, 不要解释:\n\n${transcript.slice(0, 6000)}`,
             "你 summarize 对话 1-2 句 ≤40 字, 直接给, 不解释.",
@@ -752,24 +1567,34 @@ export function ChatRoom() {
           // 总结失败 fall through · 直接 close window 不 memory
         }
       }
-      const fresh: SessionState = {
+      if (title) {
+        await memoryStore().put({
+          key: title,
+          content: session.msgs.map((m) => `[${m.role}] ${m.content}`).join("\n\n"),
+          order: 0,
+          active: true,
+          tags: ["chat-closeout"],
+          reviewStatus: "pending",
+        });
+      }
+      try {
+        await chatStore().delete(session.sessionId);
+      } catch {}
+      setSession({
         sessionId: `session-${Date.now()}`,
         startedAt: new Date().toISOString(),
         msgs: [
           {
             id: `m-${Date.now()}`,
             role: "assistant",
-            content: title
-              ? `新窗. 上次存为 "${title}". 接着说.`
-              : "新窗. 接着说.",
+            content: title ? `新窗. 上次存为 "${title}". 接着说.` : "新窗. 接着说.",
             ts: new Date().toISOString(),
           },
         ],
-      };
-      setSession(fresh);
+      });
     } catch (e) {
       console.error("[chat:closeout]", e);
-      alert("closeout 失败.");
+      flash("closeout 失败");
     } finally {
       setBusy(false);
     }
@@ -779,483 +1604,1634 @@ export function ChatRoom() {
   // render
   // ============================================
 
+  const lastAssistantId = useMemo(() => {
+    for (let i = session.msgs.length - 1; i >= 0; i--) {
+      if (session.msgs[i].role === "assistant") return session.msgs[i].id;
+    }
+    return null;
+  }, [session.msgs]);
+
   return (
     <main
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: p.bg,
-        color: p.ink,
-        fontFamily: FONT_STACK,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
+      data-kimi-chat-root
+      style={
+        {
+          position: "fixed",
+          top: "var(--kimi-visual-top, 0px)",
+          left: 0,
+          right: 0,
+          bottom: "auto",
+          height: "var(--kimi-visual-height, 100dvh)",
+          background: p.bg,
+          color: p.ink,
+          fontFamily: FONT_LATIN,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          // Set once here; the places that read it follow (bubble body,
+          // COGITATIO). A variable rather than a prop because those places sit
+          // in two different files, and threading it would run the wire through
+          // everything in between.
+          "--kimi-chat-fs": `${(BASE_FS * fontScale).toFixed(1)}px`,
+        } as React.CSSProperties
+      }
     >
-      {/* bg image */}
+      <style>{ARCVS_KEYFRAMES}</style>
+      {viewportReadout && (
+        <pre
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            top: 8,
+            left: 8,
+            zIndex: 100,
+            margin: 0,
+            maxWidth: "calc(100vw - 16px)",
+            padding: "7px 9px",
+            border: "1px solid rgba(255,255,255,.45)",
+            borderRadius: 8,
+            background: "rgba(0,0,0,.82)",
+            color: "#fff",
+            font: "10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace",
+            whiteSpace: "pre-wrap",
+            pointerEvents: "none",
+          }}
+        >
+          {viewportReadout}
+        </pre>
+      )}
+
+      {/* 环境光。画在 mood 图**之前** —— 它在这之后的话就盖在图上面, 而昼色那道
+          光是 50% 0% 处几乎不透明的一团奶白, 会把整张图的上三分之一洗掉 (顶上最狠,
+          正好是页首那一段)。有图的时候再压一档: 光是底色, 不该跟图抢。 */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: p.glow,
+          opacity: bg.url && bgOpacity > 0 ? 0.35 : 1,
+          zIndex: 0,
+          pointerEvents: "none",
+        }}
+      />
+      {/* mood picture. "adapt" shows the whole frame over a blurred bleed of
+          itself, so nothing is cropped away and the edges still reach the
+          screen; "fill" is the old crop-to-cover for anyone who prefers it. */}
       {bg.url && (
-        <div
-          aria-hidden
+        <div aria-hidden style={{ position: "absolute", inset: 0, zIndex: 0, pointerEvents: "none" }}>
+          {bgFit === "adapt" && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                backgroundImage: `url(${bg.url})`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+                filter: "blur(38px) saturate(120%)",
+                transform: "scale(1.12)",
+                opacity: Math.min((bgOpacity / 100) * 0.85, 0.55),
+              }}
+            />
+          )}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              backgroundImage: `url(${bg.url})`,
+              backgroundSize: bgFit === "adapt" ? "contain" : "cover",
+              backgroundPosition: "center",
+              backgroundRepeat: "no-repeat",
+              opacity: bgOpacity / 100,
+              mixBlendMode: theme === "day" ? "multiply" : "screen",
+            }}
+          />
+        </div>
+      )}
+      {/* the warm wash at the head of the page */}
+      {/* rising dust — the one purely atmospheric layer, gone under reduced motion */}
+      <div
+        className="arcvs-dust"
+        aria-hidden
+        style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 280, zIndex: 0, pointerEvents: "none", overflow: "hidden" }}
+      >
+        <span
+          className="arcvs-anim"
           style={{
             position: "absolute",
-            inset: 0,
-            backgroundImage: `url(${bg.url})`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            opacity: theme === "day" ? 0.18 : 0.22,
-            mixBlendMode: theme === "day" ? "multiply" : "screen",
-            pointerEvents: "none",
-            zIndex: 0,
+            left: "18%",
+            bottom: 30,
+            width: 2.2,
+            height: 2.2,
+            borderRadius: "50%",
+            background: theme === "day" ? "rgba(176,64,99,.7)" : "rgba(230,205,150,.9)",
+            boxShadow: theme === "day" ? "0 0 6px rgba(176,64,99,.4)" : "0 0 6px rgba(230,205,150,.7)",
+            animation: "arcvs-dustrise 16s linear infinite",
           }}
         />
-      )}
+        <span
+          className="arcvs-anim"
+          style={{
+            position: "absolute",
+            left: "84%",
+            bottom: 44,
+            width: 2,
+            height: 2,
+            borderRadius: "50%",
+            background: theme === "day" ? "rgba(176,64,99,.55)" : "rgba(210,138,161,.8)",
+            boxShadow: "0 0 6px rgba(210,138,161,.5)",
+            animation: "arcvs-dustrise2 21s linear infinite 6s",
+          }}
+        />
+      </div>
 
       {/* header */}
       <header
         style={{
           position: "relative",
-          zIndex: 2,
-          paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)",
-          paddingBottom: 10,
-          paddingLeft: 16,
-          paddingRight: 16,
-          borderBottom: `0.4px solid ${p.hairline}`,
-          background:
-            theme === "day"
-              ? "rgba(251,245,240,0.85)"
-              : "rgba(10,5,6,0.78)",
-          backdropFilter: "blur(20px) saturate(160%)",
-          WebkitBackdropFilter: "blur(20px) saturate(160%)",
+          zIndex: 3,
+          flex: "none",
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
+          gap: 11,
+          paddingTop: "calc(env(safe-area-inset-top, 0px) + 14px)",
+          paddingBottom: 10,
+          paddingLeft: 18,
+          paddingRight: 18,
         }}
       >
-        <Link
-          href="/room"
-          aria-label="back"
-          style={{
-            color: p.inkSoft,
-            fontSize: 22,
-            textDecoration: "none",
-            width: 32,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          ‹
+        <Link href="/room" aria-label="back" style={{ display: "flex", flex: "none", textDecoration: "none" }}>
+          <BackChevron color={p.theme === "day" ? p.roseDim : p.gold} />
         </Link>
 
-        <div
-          style={{
-            flex: 1,
-            textAlign: "center",
-            cursor: "pointer",
-          }}
-          onClick={() => {
-            if (!editingHeader) {
-              setDraftLabel(headerLabel);
-              setEditingHeader(true);
-            }
-          }}
-        >
+        {avatarsOn && (
+          <div style={{ display: "flex", flex: "none" }}>
+            <Avatar p={p} mine={false} src={avatarUrls.them} size={30} style={{ zIndex: 2 }} />
+            <Avatar p={p} mine src={avatarUrls.me} size={30} style={{ marginLeft: -8 }} />
+          </div>
+        )}
+
+        <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => {
+          if (!editingHeader) {
+            setDraftLabel(headerLabel);
+            setEditingHeader(true);
+          }
+        }}>
           {editingHeader ? (
             <input
               autoFocus
               value={draftLabel}
               onChange={(e) => setDraftLabel(e.target.value)}
               onBlur={() => {
-                if (draftLabel.trim()) setHeaderLabel(draftLabel.trim());
+                if (draftLabel.trim()) applyHeaderLabel(draftLabel.trim());
                 setEditingHeader(false);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  if (draftLabel.trim()) setHeaderLabel(draftLabel.trim());
+                  if (draftLabel.trim()) applyHeaderLabel(draftLabel.trim());
                   setEditingHeader(false);
-                } else if (e.key === "Escape") {
-                  setEditingHeader(false);
-                }
+                } else if (e.key === "Escape") setEditingHeader(false);
               }}
               style={{
-                fontSize: 16,
+                fontSize: 14,
+                letterSpacing: 6,
                 color: p.ink,
                 background: "transparent",
                 border: "none",
-                borderBottom: `0.6px solid ${p.accent}`,
-                textAlign: "center",
+                borderBottom: `0.6px solid ${p.gold}`,
                 outline: "none",
-                fontFamily: FONT_STACK,
-                width: 120,
-                padding: "2px 0",
+                fontFamily: FONT_CN,
+                width: 140,
+                padding: "1px 0",
               }}
             />
           ) : (
-            <div style={{ fontSize: 16, color: p.ink, fontWeight: 500 }}>
-              {headerLabel}
-            </div>
+            <>
+              <div style={{ fontFamily: FONT_CN, fontSize: 14, letterSpacing: 6, color: p.ink }}>
+                {headerLabel}
+              </div>
+              <div style={{ fontSize: 6.5, letterSpacing: 2.5, color: p.theme === "day" ? p.roseDim : p.goldDim }}>
+                {provider ? provider.label.toUpperCase() : "NVLLVS · 未配置后端"}
+              </div>
+            </>
           )}
         </div>
 
+        {/* sun / moon — one screen, two colourways */}
         <button
           type="button"
-          onClick={() => setShowBgPicker((v) => !v)}
-          aria-label="more"
+          onClick={() => applyTheme(theme === "day" ? "night" : "day")}
+          aria-label={theme === "day" ? "夜" : "昼"}
           style={{
+            flex: "none",
+            width: 38,
+            height: 38,
+            borderRadius: "50%",
+            border: `1px solid ${p.rule}`,
+            background: p.theme === "day" ? "rgba(252,247,239,.85)" : "rgba(12,8,5,.42)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+          }}
+        >
+          {theme === "day" ? <MoonMark color={p.roseDim} /> : <SunMark color={p.warn} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowDrawer((v) => !v)}
+          aria-label="设置"
+          style={{
+            flex: "none",
+            width: 30,
+            height: 38,
             background: "transparent",
             border: "none",
             color: p.inkSoft,
             fontSize: 18,
             cursor: "pointer",
-            width: 32,
-            height: 32,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
           }}
         >
           ⋯
         </button>
       </header>
 
-      {/* bg + theme picker drawer */}
-      {showBgPicker && (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(env(safe-area-inset-top, 0px) + 56px)",
-            right: 12,
-            zIndex: 5,
-            background:
-              theme === "day"
-                ? "rgba(255,255,255,0.95)"
-                : "rgba(20,12,14,0.92)",
-            backdropFilter: "blur(20px) saturate(160%)",
-            WebkitBackdropFilter: "blur(20px) saturate(160%)",
-            border: `0.6px solid ${p.hairline}`,
-            borderRadius: 12,
-            padding: "10px 12px",
-            minWidth: 180,
-            boxShadow: "0 12px 30px rgba(0,0,0,0.18)",
+      {/* MEMORIA — always at the head, never a popover */}
+      <div style={{ position: "relative", zIndex: 3 }}>
+        <CostBar p={p} stats={costStats} />
+      </div>
+
+      {showDrawer && (
+        <SettingsDrawer
+          p={p}
+          theme={theme}
+          bgId={bgId}
+          bgFit={bgFit}
+          bgSlots={bgSlots}
+          bgOpacity={bgOpacity}
+          avatarsOn={avatarsOn}
+          avatarUrls={avatarUrls}
+          contextMax={contextMax}
+          sysStats={sysStats}
+          onBg={applyBg}
+          onPickBgSlot={(slotIndex) => {
+            bgFileSlotRef.current = slotIndex;
+            bgFileRef.current?.click();
           }}
-        >
-          <div
-            style={{
-              fontSize: 9,
-              letterSpacing: 2,
-              color: p.inkMute,
-              textTransform: "uppercase",
-              marginBottom: 6,
-            }}
-          >
-            theme
-          </div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            {(["day", "night"] as ChatTheme[]).map((t) => {
-              const active = theme === t;
-              const ink = active ? p.accent : p.inkSoft;
-              return (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setTheme(t)}
-                  style={{
-                    flex: 1,
-                    padding: "6px 0",
-                    fontSize: 11,
-                    letterSpacing: 2,
-                    border: `0.6px solid ${active ? p.accent : p.hairline}`,
-                    background: active ? `${p.accent}1f` : "transparent",
-                    color: ink,
-                    cursor: "pointer",
-                    fontFamily: FONT_STACK,
-                    borderRadius: 6,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                  }}
-                >
-                  {/* owner 0903: 自画 SVG, kimi-web 全 不准 emoji */}
-                  {t === "day" ? (
-                    <svg width="11" height="11" viewBox="0 0 14 14" aria-hidden>
-                      <circle cx="7" cy="7" r="2.6" fill="none" stroke={ink} strokeWidth="0.9" />
-                      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
-                        <line
-                          key={a}
-                          x1="7"
-                          y1="1.2"
-                          x2="7"
-                          y2="2.8"
-                          stroke={ink}
-                          strokeWidth="0.9"
-                          strokeLinecap="round"
-                          transform={`rotate(${a} 7 7)`}
-                        />
-                      ))}
-                    </svg>
-                  ) : (
-                    <svg width="11" height="11" viewBox="0 0 14 14" aria-hidden>
-                      <path
-                        d="M 10 2.5 A 4.7 4.7 0 1 0 10 11.5 A 3.5 3.5 0 0 1 10 2.5 Z"
-                        fill={ink}
-                      />
-                    </svg>
-                  )}
-                  <span>{t}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div
-            style={{
-              fontSize: 9,
-              letterSpacing: 2,
-              color: p.inkMute,
-              textTransform: "uppercase",
-              marginBottom: 6,
-            }}
-          >
-            background
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 4,
-              marginBottom: 12,
-            }}
-          >
-            {BG_OPTIONS.map((b) => (
-              <button
-                key={b.id}
-                type="button"
-                onClick={() => setBgId(b.id)}
-                style={{
-                  padding: "5px 8px",
-                  fontSize: 10,
-                  letterSpacing: 1,
-                  border: `0.4px solid ${bgId === b.id ? p.accent : p.hairline}`,
-                  background: bgId === b.id ? `${p.accent}1a` : "transparent",
-                  color: bgId === b.id ? p.accent : p.inkSoft,
-                  cursor: "pointer",
-                  fontFamily: FONT_STACK,
-                  borderRadius: 4,
-                  textAlign: "left",
-                }}
-              >
-                {b.label}
-              </button>
-            ))}
-          </div>
-
-          {/* system context · read-only · edit at /backstage/character */}
-          <div
-            style={{
-              fontSize: 9,
-              letterSpacing: 2,
-              color: p.inkMute,
-              textTransform: "uppercase",
-              marginBottom: 6,
-            }}
-          >
-            system context
-          </div>
-          <Link
-            href="/backstage/character"
-            style={{
-              display: "block",
-              padding: "8px 10px",
-              fontSize: 10,
-              lineHeight: 1.5,
-              border: `0.4px solid ${p.hairline}`,
-              borderRadius: 6,
-              color: p.inkSoft,
-              textDecoration: "none",
-              fontFamily: FONT_STACK,
-              marginBottom: 12,
-            }}
-          >
-            {sysStats ? (
-              <>
-                <div>
-                  SP {sysStats.spChars} ?
-                </div>
-                <div style={{ marginTop: 4, color: p.inkMute, fontSize: 9, letterSpacing: 1 }}>
-                  → /backstage/character
-                </div>
-              </>
-            ) : (
-              <span style={{ color: p.inkMute }}>…</span>
-            )}
-          </Link>
-
-          <button
-            type="button"
-            onClick={newWindow}
-            style={{
-              width: "100%",
-              padding: "7px 10px",
-              fontSize: 10,
-              letterSpacing: 2,
-              border: `0.6px solid ${p.accent}`,
-              background: `${p.accent}1a`,
-              color: p.accent,
-              cursor: "pointer",
-              fontFamily: FONT_STACK,
-              borderRadius: 6,
-              textTransform: "uppercase",
-            }}
-          >
-            ↺ closeout · 新窗口
-          </button>
-          <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
-            <Link
-              href="/chat/history"
-              style={{
-                flex: 1,
-                padding: "6px 10px",
-                fontSize: 9,
-                letterSpacing: 2,
-                border: `0.6px solid ${p.hairline}`,
-                background: "transparent",
-                color: p.inkSoft,
-                cursor: "pointer",
-                fontFamily: FONT_STACK,
-                borderRadius: 6,
-                textAlign: "center",
-                textDecoration: "none",
-                textTransform: "uppercase",
-              }}
-            >
-              ↶ 过往 sessions
-            </Link>
-          </div>
-        </div>
+          onRenameBgSlot={renameBackground}
+          sendKey={sendKey}
+          onSendKey={applySendKey}
+          onPickSendKeyArt={(slot) => {
+            sendKeySlotRef.current = slot;
+            sendKeyFileRef.current?.click();
+          }}
+          renamingSlot={renamingSlot}
+          onCommitRename={commitRename}
+          onCancelRename={() => setRenamingSlot(null)}
+          onBgFit={applyBgFit}
+          onBgOpacity={applyBgOpacity}
+          onAvatars={applyAvatarsOn}
+          onPickAvatar={(slot) => {
+            avatarSlotRef.current = slot;
+            avatarFileRef.current?.click();
+          }}
+          onClearAvatar={(slot) => applyAvatarIds({ ...avatarIds, [slot]: undefined })}
+          fontScale={fontScale}
+          onFontScale={(v) => {
+            setFontScale(v);
+            store(FONT_SCALE_KEY, String(v));
+          }}
+          onContextMax={(n) => {
+            setContextMax(n);
+            store(CONTEXT_MAX_KEY, String(n));
+          }}
+          onCloseout={newWindow}
+          onFresh={freshWindow}
+          closeoutReady={isProviderConfigured(pCap)}
+        />
       )}
 
-      {/* messages list */}
+      {/* messages */}
       <div
         ref={scrollRef}
         style={{
           flex: 1,
+          minHeight: 0,
           overflowY: "auto",
-          padding: "8px 14px 4px",
+          padding: "12px 16px 12px 12px",
           position: "relative",
           zIndex: 1,
-          // iOS PWA fix: 防止 elastic bounce 带动整个 main / 背景
-          // 看起来"在滑背景图". contain 把 scroll chain 锁在 list 内.
           overscrollBehavior: "contain",
-          // iOS smooth touch scrolling
+          // Not one step sideways.
+          //
+          // overflow-y: auto forces overflow-x up from visible to auto, so the
+          // moment anything in the stream reaches past the right edge this
+          // column becomes a thing that scrolls horizontally — and once dragged
+          // it stays there, which reads as the whole conversation having been
+          // pulled aside. (A photo stack being dragged overhangs by up to half a
+          // card; that is the one.) Declaring hidden closes that axis, and what
+          // hangs over is clipped by the container.
+          overflowX: "hidden",
+          overscrollBehaviorX: "none",
           WebkitOverflowScrolling: "touch",
           touchAction: "pan-y",
+          display: "flex",
+          flexDirection: "column",
+          gap: 11,
         }}
       >
+        {/* the spine — only in the no-avatar reading, where the node dots hang on it */}
+        {!avatarsOn && session.msgs.length > 0 && (
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: 21,
+              top: 8,
+              bottom: 8,
+              width: 1,
+              background: `linear-gradient(180deg, transparent, ${p.ruleSoft} 12%, ${p.ruleSoft} 88%, transparent)`,
+              pointerEvents: "none",
+            }}
+          />
+        )}
+
         {session.msgs.length === 0 && !busy ? (
-          <EmptyRose message="今天还没说话 · 写一句" palette="gothic" />
+          <EmptyRose message="" palette="gothic" />
         ) : (
           session.msgs.map((m, i) => {
             const prev = session.msgs[i - 1];
             const showTs =
-              !prev ||
-              new Date(m.ts).getTime() - new Date(prev.ts).getTime() > 5 * 60 * 1000;
-            // retry 只对最后一条 assistant 显示 (并且不是 streaming 中)
-            const isLastAssistant =
-              m.role === "assistant" &&
-              i === session.msgs.length - 1 &&
-              m.content.length > 0 &&
-              !busy;
+              !prev || new Date(m.ts).getTime() - new Date(prev.ts).getTime() > 5 * 60 * 1000;
+            const streaming = busy && m.role === "assistant" && m.id === lastAssistantId;
             return (
               <MessageItem
                 key={m.id}
                 msg={m}
-                palette={p}
+                p={p}
+                avatarsOn={avatarsOn}
+                avatarUrl={m.role === "user" ? avatarUrls.me : avatarUrls.them}
                 showTs={showTs}
+                streaming={streaming}
+                thinkStartedAt={streaming ? (thinkStartRef.current ?? undefined) : undefined}
                 onCopy={() => copyMsg(m.id)}
-                onRetry={isLastAssistant ? retryLast : undefined}
+                onFork={() => void forkFrom(m.id)}
+                onRewind={() => rewindTo(m.id)}
+                onSwipe={
+                  m.role === "assistant" && !busy ? (dir) => switchSwipe(m.id, dir) : undefined
+                }
               />
             );
           })
         )}
-        {busy && (
-          <div
-            style={{
-              fontSize: 12,
-              color: p.inkMute,
-              fontStyle: "italic",
-              marginTop: 6,
-            }}
-          >
-            ...
+        {busy && !session.msgs.some((m) => m.id === lastAssistantId && m.content) && (
+          <div style={{ paddingLeft: avatarsOn ? 40 : 29 }}>
+            <Cogitatio p={p} streaming startedAt={thinkStartRef.current ?? undefined} />
           </div>
         )}
       </div>
 
-      {/* input — PWA 紧凑版, 让 message 区往下延 */}
-      <div
-        style={{
-          position: "relative",
-          zIndex: 2,
-          padding: "6px 10px",
-          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 4px)",
-          borderTop: `0.4px solid ${p.hairline}`,
-          background:
-            theme === "day"
-              ? "rgba(251,245,240,0.92)"
-              : "rgba(10,5,6,0.85)",
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
-          display: "flex",
-          gap: 6,
-          alignItems: "flex-end",
-        }}
-      >
-        <textarea
-          ref={draftRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="message…"
-          rows={1}
+      {notice && (
+        <div
           style={{
-            flex: 1,
-            background: p.inputBg,
-            color: p.inputInk,
-            border: `0.6px solid ${p.hairline}`,
-            borderRadius: 16,
-            padding: "8px 12px",
-            fontSize: 15,
-            lineHeight: 1.4,
-            fontFamily: FONT_STACK,
-            outline: "none",
-            resize: "none",
-            overflow: "hidden",
-          }}
-        />
-        <button
-          type="button"
-          onClick={send}
-          disabled={busy || !draft.trim()}
-          aria-label="send"
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: "50%",
-            border: "none",
-            background: draft.trim() ? p.accent : `${p.accent}55`,
-            color: theme === "day" ? "#fff" : "#1a0e08",
-            cursor: draft.trim() ? "pointer" : "default",
-            fontSize: 14,
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 96,
+            zIndex: 8,
             display: "flex",
-            alignItems: "center",
             justifyContent: "center",
-            flexShrink: 0,
+            pointerEvents: "none",
           }}
         >
-          ↑
-        </button>
+          <span
+            style={{
+              fontFamily: FONT_CN,
+              fontSize: 10,
+              letterSpacing: 1,
+              color: p.ink,
+              background: p.theme === "day" ? "rgba(252,247,239,.94)" : "rgba(20,14,9,.92)",
+              border: `1px solid ${p.rule}`,
+              borderRadius: 999,
+              padding: "5px 14px",
+              boxShadow: p.panelShadow,
+            }}
+          >
+            {notice}
+          </span>
+        </div>
+      )}
+
+      {/* composer */}
+      <div
+        data-kimi-composer
+        style={{
+          position: "relative",
+          zIndex: 3,
+          flex: "none",
+          borderTop: `1px solid ${p.rule}`,
+          background: bg.url && bgOpacity > 0 ? "transparent" : p.chrome,
+          backdropFilter: bg.url && bgOpacity > 0 ? "none" : "blur(20px) saturate(160%)",
+          WebkitBackdropFilter: bg.url && bgOpacity > 0 ? "none" : "blur(20px) saturate(160%)",
+        }}
+      >
+        <ModelSwitcher
+          p={p}
+          settings={llmSettings}
+          cap={pCap}
+          codexCap={codexCap}
+          open={showModelPicker}
+          onToggle={() => setShowModelPicker((v) => !v)}
+          onPickDirect={(pid, model) => {
+            writeActiveProviderChoice("direct", model);
+            setActiveModel(pid, model);
+            setLlmSettings(loadLLMSettings());
+            setProviderTick((n) => n + 1);
+            setShowModelPicker(false);
+          }}
+          onPickP={(model) => {
+            writeActiveProviderChoice("p", model);
+            setProviderTick((n) => n + 1);
+            setShowModelPicker(false);
+          }}
+          onPickCodex={(model) => {
+            writeActiveProviderChoice("codex", model);
+            setProviderTick((n) => n + 1);
+            setShowModelPicker(false);
+          }}
+        />
+        <div
+          data-kimi-composer-row
+          style={{
+            display: "flex",
+            // bottom-aligned so the two round keys stay put as the field grows
+            alignItems: "flex-end",
+            gap: 9,
+            padding: "6px 16px var(--kimi-composer-bottom, max(calc(env(safe-area-inset-bottom, 0px) - 14px), 8px))",
+          }}
+        >
+          {/* picture port */}
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            aria-label="发图片"
+            disabled={uploading != null}
+            style={{
+              flex: "none",
+              width: 42,
+              height: 42,
+              borderRadius: "50%",
+              border: `1px solid ${p.rule}`,
+              background: p.fieldBg,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: uploading != null ? "default" : "pointer",
+              position: "relative",
+            }}
+          >
+            {uploading != null ? (
+              <RingGauge color={p.gold} track={p.ruleSoft} frac={uploading} size={20} width={2} />
+            ) : (
+              <PhotoMark color={p.theme === "day" ? p.roseDim : p.gold} />
+            )}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void pickImage(f);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={avatarFileRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void pickAvatar(f);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={bgFileRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void pickBackground(f, bgFileSlotRef.current);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={sendKeyFileRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) void pickSendKeyArt(f, sendKeySlotRef.current);
+            }}
+          />
+
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              borderRadius: 21,
+              border: `1px solid ${p.fieldBorder}`,
+              background: p.fieldBg,
+              display: "flex",
+              alignItems: "center",
+              padding: "10px 16px",
+              boxSizing: "border-box",
+            }}
+          >
+            <textarea
+              ref={draftRef}
+              defaultValue=""
+              onInput={(e) => {
+                resizeDraft();
+                // Only when it crosses between empty and not — that is what the
+                // send key's look depends on, and nothing else re-renders here.
+                const next = e.currentTarget.value.trim().length > 0;
+                setHasDraft((cur) => (cur === next ? cur : next));
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                // Mid-composition Enter is the IME choosing a candidate, not a
+                // person finishing a sentence — never send on it.
+                if (e.nativeEvent.isComposing) return;
+                if (sendKey.enterSends) {
+                  if (e.shiftKey) return; // Shift+Enter breaks the line
+                  e.preventDefault();
+                  void send();
+                  return;
+                }
+                if (e.metaKey || e.ctrlKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder=""
+              rows={1}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                display: "block",
+                background: "transparent",
+                color: p.ink,
+                border: "none",
+                outline: "none",
+                resize: "none",
+                overflowY: "auto",
+                fontFamily: FONT_CN,
+                fontSize: "var(--kimi-chat-fs, 12px)",
+                lineHeight: 1.7,
+                padding: 0,
+                margin: 0,
+                boxSizing: "content-box",
+                maxHeight: 160,
+              }}
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={busy ? stopStreaming : () => void send()}
+            disabled={!busy && !hasDraft}
+            aria-label={busy ? "停" : "发送"}
+            style={{
+              flex: "none",
+              width: 42,
+              height: 42,
+              borderRadius: "50%",
+              // Art with its own ground stands alone; the drawn mark, and art
+              // that fades at the edge, need a line to still read as a button.
+              border:
+                sendArt && !busy
+                  ? sendArt.ring === "none"
+                    ? "none"
+                    : `1px solid ${p.theme === "day" ? "rgba(176,64,99,.45)" : "rgba(230,205,150,.55)"}`
+                  : `1px solid ${busy || hasDraft ? p.bubbleThemCorner : p.rule}`,
+              background:
+                sendArt?.bare && !busy
+                  ? "transparent"
+                  : p.theme === "day"
+                    ? "rgba(252,247,239,.92)"
+                    : p.bg,
+              overflow: "hidden",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: busy || hasDraft ? "pointer" : "default",
+              position: "relative",
+              opacity: busy || hasDraft ? 1 : (sendArt?.idleOpacity ?? 0.5),
+            }}
+          >
+            {!sendArt && (
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  inset: -4,
+                  borderRadius: "50%",
+                  border: `1px dashed ${p.ruleSoft}`,
+                }}
+              />
+            )}
+            {busy ? (
+              <StopMark color={p.theme === "day" ? p.roseHi : p.goldHi} />
+            ) : sendArt ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={sendArt.src}
+                alt=""
+                style={{
+                  position: "absolute",
+                  inset: sendArt.inset ?? -1,
+                  objectFit: "contain",
+                  display: "block",
+                  filter: sendArt.filter,
+                }}
+              />
+            ) : (
+              <FourPointStar color={p.theme === "day" ? p.roseHi : p.goldHi} />
+            )}
+          </button>
+        </div>
       </div>
     </main>
+  );
+}
+
+// ============================================
+// ModelSwitcher
+// ============================================
+
+// One thin line above the composer: the active backend and model. Opening it
+// lists every configured profile, plus the local `claude -p` option when the
+// server says it exists. When it does not, the option is not in the list at
+// all — not greyed out, not there.
+function ModelSwitcher({
+  p,
+  settings,
+  cap,
+  open,
+  onToggle,
+  onPickDirect,
+  onPickP,
+  onPickCodex,
+  codexCap,
+}: {
+  p: Palette;
+  settings: LLMSettings | null;
+  cap: PCapability | null;
+  codexCap: PCapability | null;
+  open: boolean;
+  onToggle: () => void;
+  onPickDirect: (profileId: string, model: string) => void;
+  onPickP: (model: string) => void;
+  onPickCodex: (model: string) => void;
+}) {
+  const profiles = settings?.profiles ?? [];
+  const withModels = profiles.filter((pf) => pf.models.length > 0);
+  const choice = typeof window !== "undefined" ? readActiveProviderChoice() : { kind: "direct" as const, model: "" };
+  const active = profiles.find((pf) => pf.id === settings?.activeProfileId) ?? profiles[0];
+  const activeModel = settings?.activeModel || active?.models[0] || "";
+  const pOn = !!cap?.enabled;
+  const codexOn = !!codexCap?.enabled;
+
+  const label =
+    choice.kind === "codex" && codexOn
+      ? `codex · ${choice.model || "本机"}`
+      : choice.kind === "p" && pOn
+        ? `claude -p · ${choice.model || cap?.models?.[0] || "sonnet"}`
+        : active
+          ? `${active.name || "未命名"} · ${activeModel || "no model"}`
+          : "配置后端";
+
+  const group = {
+    fontSize: 9,
+    letterSpacing: 2,
+    textTransform: "uppercase" as const,
+    color: p.inkMute,
+    padding: "4px 4px 2px",
+    fontFamily: FONT_LATIN,
+  };
+  const item = (isActive: boolean) => ({
+    display: "block",
+    width: "100%",
+    textAlign: "left" as const,
+    padding: "5px 8px",
+    fontSize: 11,
+    fontFamily: "var(--font-mono)",
+    color: isActive ? (p.theme === "day" ? p.roseHi : p.goldHi) : p.inkSoft,
+    background: isActive ? (p.theme === "day" ? "rgba(176,64,99,.08)" : "rgba(230,205,150,.09)") : "transparent",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+  });
+
+  return (
+    <div style={{ position: "relative", padding: "4px 16px 0" }}>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "calc(100% + 6px)",
+            left: 12,
+            right: 12,
+            maxHeight: 320,
+            overflowY: "auto",
+            background: p.theme === "day" ? "rgba(252,247,239,.97)" : "rgba(16,11,7,.95)",
+            backdropFilter: "blur(20px) saturate(160%)",
+            WebkitBackdropFilter: "blur(20px) saturate(160%)",
+            border: `1px solid ${p.rule}`,
+            borderRadius: 12,
+            padding: "8px 10px",
+            boxShadow: p.panelShadow,
+            zIndex: 9,
+          }}
+        >
+          {pOn && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={group}>
+                {pProfile(cap!).name}
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>cli</span>
+              </div>
+              {(cap!.models ?? ["sonnet"]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => onPickP(m)}
+                  style={item(choice.kind === "p" && choice.model === m)}
+                >
+                  {m}
+                </button>
+              ))}
+              <div
+                style={{
+                  fontSize: 8.5,
+                  lineHeight: 1.6,
+                  letterSpacing: 0.5,
+                  color: p.inkMute,
+                  padding: "4px 8px 0",
+                  fontFamily: FONT_CN,
+                }}
+              >
+                跑在本机的 claude · 带着这台机器自己的 CLAUDE.md、MCP、订阅额度
+              </div>
+            </div>
+          )}
+
+          {codexOn && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={group}>
+                {codexProfile(codexCap!).name}
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>cli</span>
+              </div>
+              {codexProfile(codexCap!).models.map((m) => (
+                <button
+                  key={m || "default"}
+                  type="button"
+                  onClick={() => onPickCodex(m)}
+                  style={item(choice.kind === "codex" && choice.model === m)}
+                >
+                  {m || "默认模型"}
+                </button>
+              ))}
+              <div
+                style={{
+                  fontSize: 8.5,
+                  lineHeight: 1.6,
+                  letterSpacing: 0.5,
+                  color: p.inkMute,
+                  padding: "4px 8px 0",
+                  fontFamily: FONT_CN,
+                }}
+              >
+                跑在本机的 codex · 回复整条落地, 不逐字浮现
+              </div>
+            </div>
+          )}
+
+          {withModels.length === 0 && !pOn && !codexOn ? (
+            <Link
+              href="/backstage/settings"
+              style={{ display: "block", fontSize: 11, color: p.inkSoft, padding: "6px 4px", textDecoration: "none" }}
+            >
+              还没有档案 · 去 /backstage/settings 加 →
+            </Link>
+          ) : (
+            withModels.map((pf) => (
+              <div key={pf.id} style={{ marginBottom: 8 }}>
+                <div style={group}>
+                  {pf.name || "未命名"}
+                  <span style={{ marginLeft: 6, opacity: 0.7 }}>{pf.format}</span>
+                </div>
+                {pf.models.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => onPickDirect(pf.id, m)}
+                    style={item(
+                      choice.kind === "direct" &&
+                        pf.id === settings?.activeProfileId &&
+                        m === settings?.activeModel,
+                    )}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
+          <Link
+            href="/backstage/settings"
+            style={{
+              display: "block",
+              fontSize: 9,
+              letterSpacing: 1.5,
+              textTransform: "uppercase",
+              color: p.inkMute,
+              padding: "6px 4px 2px",
+              textDecoration: "none",
+              borderTop: `1px solid ${p.ruleSoft}`,
+              marginTop: 4,
+              fontFamily: FONT_LATIN,
+            }}
+          >
+            管理档案 →
+          </Link>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: "2px 0",
+          fontSize: 9,
+          letterSpacing: 1.5,
+          color: p.inkMute,
+          cursor: "pointer",
+          fontFamily: FONT_LATIN,
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+        }}
+      >
+        <span
+          style={{
+            width: 5,
+            height: 5,
+            borderRadius: "50%",
+            background:
+              (choice.kind === "p" && pOn) || (choice.kind === "codex" && codexOn)
+                ? p.warn
+                : active?.apiKey
+                  ? p.gold
+                  : p.inkMute,
+            display: "inline-block",
+            opacity: 0.85,
+          }}
+        />
+        {label}
+        <span style={{ fontSize: 8, opacity: 0.8 }}>{open ? "▲" : "▼"}</span>
+      </button>
+    </div>
+  );
+}
+
+function BackgroundSlotToggle({
+  p,
+  slot,
+  selected,
+  onSelect,
+  onUpload,
+  onRename,
+  renaming,
+  onCommitRename,
+  onCancelRename,
+}: {
+  p: Palette;
+  slot: BackgroundSlot;
+  selected: boolean;
+  onSelect: () => void;
+  onUpload: () => void;
+  onRename: () => void;
+  renaming: boolean;
+  onCommitRename: (value: string) => void;
+  onCancelRename: () => void;
+}) {
+  const holdTimer = useRef<number | null>(null);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  const didLongPress = useRef(false);
+  const accent = p.theme === "day" ? p.roseHi : p.gold;
+  const accentHi = p.theme === "day" ? p.roseHi : p.goldHi;
+
+  const cancelHold = useCallback(() => {
+    if (holdTimer.current !== null) window.clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+    pressStart.current = null;
+  }, []);
+
+  useEffect(() => cancelHold, [cancelHold]);
+
+  return (
+    <div
+      style={{
+        minWidth: 0,
+        display: "flex",
+        border: `1px solid ${selected ? accent : p.ruleSoft}`,
+        background: selected
+          ? p.theme === "day"
+            ? "rgba(176,64,99,.08)"
+            : "rgba(230,205,150,.08)"
+          : "transparent",
+        borderRadius: 4,
+        overflow: "hidden",
+      }}
+    >
+      {renaming ? (
+        <input
+          autoFocus
+          defaultValue={slot.label}
+          maxLength={24}
+          aria-label="背景的名字"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onCommitRename((e.target as HTMLInputElement).value);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancelRename();
+            }
+          }}
+          onBlur={(e) => onCommitRename(e.target.value)}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: "5px 7px",
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            color: accentHi,
+            fontSize: 10,
+            letterSpacing: 0.8,
+            fontFamily: FONT_CN,
+          }}
+        />
+      ) : (
+      <button
+        type="button"
+        aria-pressed={selected}
+        aria-label={slot.imageId ? `${slot.label}，长按改名` : `上传${slot.label}`}
+        title={slot.imageId ? "点按切换 · 长按改名" : "上传背景"}
+        onPointerDown={(event) => {
+          if (!slot.imageId || event.button !== 0) return;
+          didLongPress.current = false;
+          pressStart.current = { x: event.clientX, y: event.clientY };
+          holdTimer.current = window.setTimeout(() => {
+            holdTimer.current = null;
+            pressStart.current = null;
+            didLongPress.current = true;
+            onRename();
+          }, 600);
+        }}
+        onPointerMove={(event) => {
+          const start = pressStart.current;
+          if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) cancelHold();
+        }}
+        onPointerUp={cancelHold}
+        onPointerCancel={cancelHold}
+        onPointerLeave={cancelHold}
+        onContextMenu={(event) => {
+          if (!slot.imageId) return;
+          event.preventDefault();
+          cancelHold();
+          if (!didLongPress.current) {
+            didLongPress.current = true;
+            onRename();
+            window.setTimeout(() => {
+              didLongPress.current = false;
+            }, 750);
+          }
+        }}
+        onClick={() => {
+          if (didLongPress.current) {
+            didLongPress.current = false;
+            return;
+          }
+          if (slot.imageId) onSelect();
+          else onUpload();
+        }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: "5px 7px",
+          border: "none",
+          background: "transparent",
+          color: selected ? accentHi : p.inkSoft,
+          fontSize: 10,
+          letterSpacing: 0.8,
+          fontFamily: FONT_CN,
+          textAlign: "left",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          cursor: "pointer",
+          touchAction: "manipulation",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        }}
+      >
+        {slot.label}
+      </button>
+      )}
+      <button
+        type="button"
+        onClick={onUpload}
+        aria-label={slot.imageId ? `更换${slot.label}` : `上传${slot.label}`}
+        title={slot.imageId ? "更换图片" : "上传图片"}
+        style={{
+          width: 28,
+          flex: "0 0 28px",
+          border: "none",
+          borderLeft: `1px solid ${selected ? accent : p.ruleSoft}`,
+          background: "transparent",
+          color: selected ? accentHi : p.inkMute,
+          fontSize: 12,
+          lineHeight: 1,
+          cursor: "pointer",
+          fontFamily: FONT_LATIN,
+        }}
+      >
+        {slot.imageId ? "↥" : "+"}
+      </button>
+    </div>
+  );
+}
+
+// ============================================
+// SettingsDrawer
+// ============================================
+
+function SettingsDrawer({
+  p,
+  theme,
+  bgId,
+  bgFit,
+  bgSlots,
+  bgOpacity,
+  avatarsOn,
+  avatarUrls,
+  contextMax,
+  sysStats,
+  onBg,
+  onPickBgSlot,
+  onRenameBgSlot,
+  onBgFit,
+  onBgOpacity,
+  onAvatars,
+  onPickAvatar,
+  onClearAvatar,
+  fontScale,
+  onFontScale,
+  onContextMax,
+  onCloseout,
+  onFresh,
+  closeoutReady,
+  sendKey,
+  onSendKey,
+  onPickSendKeyArt,
+  renamingSlot,
+  onCommitRename,
+  onCancelRename,
+}: {
+  p: Palette;
+  theme: ChatTheme;
+  bgId: string;
+  bgFit: BgFit;
+  bgSlots: BackgroundSlot[];
+  bgOpacity: number;
+  avatarsOn: boolean;
+  avatarUrls: { me?: string; them?: string };
+  contextMax: number;
+  sysStats: { spChars: number; memInjectOn: boolean; memTotalActive: number } | null;
+  onBg: (id: string) => void;
+  onPickBgSlot: (slotIndex: number) => void;
+  onRenameBgSlot: (slotIndex: number) => void;
+  onBgFit: (f: BgFit) => void;
+  onBgOpacity: (value: number) => void;
+  sendKey: SendKeySettings;
+  onSendKey: (next: SendKeySettings) => void;
+  onPickSendKeyArt: (slot: "day" | "night") => void;
+  renamingSlot: number | null;
+  onCommitRename: (slotIndex: number, value: string) => void;
+  onCancelRename: () => void;
+  onAvatars: (v: boolean) => void;
+  onPickAvatar: (slot: "me" | "them") => void;
+  onClearAvatar: (slot: "me" | "them") => void;
+  fontScale: number;
+  onFontScale: (v: number) => void;
+  onContextMax: (n: number) => void;
+  onCloseout: () => void;
+  onFresh: () => void;
+  /** A generation backend exists, so closeout can actually summarize. */
+  closeoutReady: boolean;
+}) {
+  const coreCtx = coreContextMode();
+  const heading = {
+    fontSize: 9,
+    letterSpacing: 2,
+    color: p.inkMute,
+    textTransform: "uppercase" as const,
+    marginBottom: 6,
+    fontFamily: FONT_LATIN,
+  };
+  const chip = (on: boolean) => ({
+    flex: 1,
+    padding: "6px 0",
+    fontSize: 10,
+    letterSpacing: 1.5,
+    border: `1px solid ${on ? (p.theme === "day" ? p.roseHi : p.gold) : p.ruleSoft}`,
+    background: on ? (p.theme === "day" ? "rgba(176,64,99,.1)" : "rgba(230,205,150,.1)") : "transparent",
+    color: on ? (p.theme === "day" ? p.roseHi : p.goldHi) : p.inkSoft,
+    cursor: "pointer",
+    fontFamily: FONT_LATIN,
+    borderRadius: 6,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  });
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: "calc(env(safe-area-inset-top, 0px) + 88px)",
+        right: 12,
+        zIndex: 7,
+        width: 232,
+        maxHeight: "62vh",
+        overflowY: "auto",
+        background: theme === "day" ? "rgba(252,247,239,.97)" : "rgba(16,11,7,.95)",
+        backdropFilter: "blur(20px) saturate(160%)",
+        WebkitBackdropFilter: "blur(20px) saturate(160%)",
+        border: `1px solid ${p.rule}`,
+        borderRadius: 12,
+        padding: "12px 13px",
+        boxShadow: p.panelShadow,
+      }}
+    >
+      {/* avatars — the third reading of the same screen */}
+      <div style={heading}>avatars</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        <button type="button" onClick={() => onAvatars(false)} style={{ ...chip(!avatarsOn), fontFamily: FONT_CN }}>
+          无头像
+        </button>
+        <button type="button" onClick={() => onAvatars(true)} style={{ ...chip(avatarsOn), fontFamily: FONT_CN }}>
+          带头像
+        </button>
+      </div>
+      {avatarsOn && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center" }}>
+          {(["them", "me"] as const).map((slot) => (
+            <div key={slot} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => onPickAvatar(slot)}
+                style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer" }}
+                aria-label={slot === "me" ? "换我的头像" : "换他的头像"}
+              >
+                <Avatar p={p} mine={slot === "me"} src={avatarUrls[slot]} size={34} />
+              </button>
+              <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <span style={{ fontSize: 8, letterSpacing: 1.5, color: p.inkMute, fontFamily: FONT_LATIN }}>
+                  {slot === "me" ? "EGO" : "ILLE"}
+                </span>
+                {avatarUrls[slot] && (
+                  <button
+                    type="button"
+                    onClick={() => onClearAvatar(slot)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      padding: 0,
+                      fontSize: 8,
+                      letterSpacing: 1,
+                      color: p.inkMute,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      fontFamily: FONT_LATIN,
+                    }}
+                  >
+                    清除
+                  </button>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={heading}>background</div>
+      <button
+        type="button"
+        onClick={() => onBg("none")}
+        style={{
+          ...chip(bgId === "none"),
+          width: "100%",
+          marginBottom: 4,
+          fontFamily: FONT_CN,
+        }}
+      >
+        无背景
+      </button>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginBottom: 6 }}>
+        {bgSlots.map((slot, index) => (
+          <BackgroundSlotToggle
+            key={index}
+            p={p}
+            slot={slot}
+            selected={bgId === backgroundSlotId(index)}
+            onSelect={() => onBg(backgroundSlotId(index))}
+            onUpload={() => onPickBgSlot(index)}
+            onRename={() => onRenameBgSlot(index)}
+            renaming={renamingSlot === index}
+            onCommitRename={(value) => onCommitRename(index, value)}
+            onCancelRename={onCancelRename}
+          />
+        ))}
+      </div>
+      <div
+        style={{
+          margin: "0 1px 8px",
+          color: p.inkMute,
+          fontSize: 8,
+          letterSpacing: 0.5,
+          fontFamily: FONT_CN,
+        }}
+      >
+        点按切换 · 长按改名 · ↥ 换图
+      </div>
+
+      <div style={{ ...heading, marginTop: 14 }}>send key</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+        {SEND_KEY_PRESET_ORDER.map((key) => {
+          const art = SEND_ART_PRESETS[key][theme];
+          const on = sendKey.preset === key && !customIdFor(sendKey, theme);
+          return (
+            <button
+              key={key}
+              type="button"
+              aria-label={SEND_ART_PRESETS[key].label}
+              onClick={() =>
+                onSendKey({ ...sendKey, preset: key, customDay: null, customNight: null })
+              }
+              style={{
+                width: 38,
+                height: 38,
+                padding: 0,
+                borderRadius: "50%",
+                border: `1px solid ${on ? p.bubbleThemCorner : p.ruleSoft}`,
+                background: on
+                  ? theme === "day"
+                    ? "rgba(176,64,99,.08)"
+                    : "rgba(230,205,150,.09)"
+                  : "transparent",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                position: "relative",
+                overflow: "hidden",
+              }}
+            >
+              {art ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={art.src}
+                  alt=""
+                  style={{ position: "absolute", inset: 1, objectFit: "contain", filter: art.filter }}
+                />
+              ) : (
+                <FourPointStar color={theme === "day" ? p.roseHi : p.goldHi} size={13} />
+              )}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          aria-label="自己的图"
+          onClick={() => onPickSendKeyArt(theme)}
+          style={{
+            width: 38,
+            height: 38,
+            padding: 0,
+            borderRadius: "50%",
+            border: `1px dashed ${customIdFor(sendKey, theme) ? p.bubbleThemCorner : p.ruleSoft}`,
+            background: "transparent",
+            color: p.inkMute,
+            fontSize: 15,
+            lineHeight: 1,
+            cursor: "pointer",
+          }}
+        >
+          ↥
+        </button>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+        <button
+          type="button"
+          onClick={() => onSendKey({ ...sendKey, enterSends: !sendKey.enterSends })}
+          style={{ ...chip(sendKey.enterSends), fontFamily: FONT_CN }}
+        >
+          Enter 发送
+        </button>
+        {customIdFor(sendKey, theme) && (
+          <button
+            type="button"
+            onClick={() =>
+              onSendKey({
+                ...sendKey,
+                [theme === "day" ? "customDay" : "customNight"]: null,
+              })
+            }
+            style={{ ...chip(false), fontFamily: FONT_CN }}
+          >
+            用回预设
+          </button>
+        )}
+      </div>
+      <div
+        style={{
+          margin: "0 1px 8px",
+          color: p.inkMute,
+          fontSize: 8,
+          letterSpacing: 0.5,
+          fontFamily: FONT_CN,
+        }}
+      >
+        选一枚 · ↥ 换成自己的图 · 昼夜各存各的
+        {sendKey.enterSends ? " · Shift+Enter 换行" : " · 现在是 ⌘/Ctrl+Enter 发送"}
+      </div>
+      {bgId !== "none" && (
+        <>
+          <div style={{ display: "flex", gap: 6, marginBottom: 9 }}>
+            <button type="button" onClick={() => onBgFit("adapt")} style={{ ...chip(bgFit === "adapt"), fontFamily: FONT_CN }}>
+              整幅
+            </button>
+            <button type="button" onClick={() => onBgFit("fill")} style={{ ...chip(bgFit === "fill"), fontFamily: FONT_CN }}>
+              铺满
+            </button>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                color: p.inkMute,
+                fontSize: 9,
+                letterSpacing: 1,
+                fontFamily: FONT_CN,
+                marginBottom: 3,
+              }}
+            >
+              <span>透明度</span>
+              <span style={{ fontFamily: FONT_LATIN, fontVariantNumeric: "tabular-nums" }}>{bgOpacity}%</span>
+            </div>
+            <div style={{ position: "relative", height: 22 }}>
+              <div
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  top: 10,
+                  height: 2,
+                  borderRadius: 999,
+                  background: p.ruleSoft,
+                  overflow: "hidden",
+                }}
+              >
+                <span
+                  style={{
+                    display: "block",
+                    width: `${bgOpacity}%`,
+                    height: "100%",
+                    background: p.theme === "day" ? p.roseHi : p.gold,
+                  }}
+                />
+              </div>
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  left: `${bgOpacity}%`,
+                  top: 5,
+                  width: 12,
+                  height: 12,
+                  borderRadius: 999,
+                  transform: `translateX(-${bgOpacity}%)`,
+                  background: theme === "day" ? "#FCF7EF" : "#100B07",
+                  border: `1px solid ${p.theme === "day" ? p.roseHi : p.gold}`,
+                  boxShadow: `0 0 0 2px ${theme === "day" ? "rgba(176,64,99,.08)" : "rgba(230,205,150,.08)"}`,
+                  pointerEvents: "none",
+                }}
+              />
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={bgOpacity}
+                onChange={(event) => onBgOpacity(Number(event.target.value))}
+                aria-label="背景透明度"
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: 22,
+                  margin: 0,
+                  opacity: 0,
+                  cursor: "pointer",
+                }}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      <div style={heading}>textvs</div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+        {FONT_SCALES.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => onFontScale(f.id)}
+            style={{
+              ...chip(fontScale === f.id),
+              fontFamily: FONT_CN,
+              // Each step is set in its own size, so the choice shows itself
+              fontSize: Math.round(11 * f.id),
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={heading}>contextvs</div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+        {[128_000, 200_000, 1_000_000].map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onContextMax(n)}
+            style={{
+              ...chip(contextMax === n),
+              ...ONUM,
+              fontSize: 9,
+            }}
+          >
+            {n >= 1_000_000 ? "1M" : `${n / 1000}K`}
+          </button>
+        ))}
+      </div>
+
+      <div style={heading}>system context</div>
+      <Link
+        href="/backstage/character"
+        style={{
+          display: "block",
+          padding: "8px 10px",
+          fontSize: 10,
+          lineHeight: 1.5,
+          border: `1px solid ${p.ruleSoft}`,
+          borderRadius: 6,
+          color: p.inkSoft,
+          textDecoration: "none",
+          fontFamily: FONT_LATIN,
+          marginBottom: 10,
+        }}
+      >
+        {sysStats ? (
+          <>
+            <div>
+              SP {sysStats.spChars} 字 ·{" "}
+              {sysStats.memInjectOn ? `${sysStats.memTotalActive} 条 memory 注入` : "memory 不注入"}
+            </div>
+            <div style={{ marginTop: 4, color: p.inkMute, fontSize: 9, letterSpacing: 1 }}>
+              → /backstage/character
+            </div>
+          </>
+        ) : (
+          <span style={{ color: p.inkMute }}>…</span>
+        )}
+      </Link>
+
+      {/* What kimi-core adds to a turn, when a deployment has one. A build-time
+          setting, so it is stated rather than measured — and stated at all
+          because "the model knew that" and "the model was told that" are
+          different things and only this line tells them apart. */}
+      {coreCtx !== "off" && (
+        <div
+          style={{
+            marginTop: -6,
+            marginBottom: 10,
+            fontSize: 9,
+            lineHeight: 1.6,
+            letterSpacing: 1,
+            color: p.inkMute,
+            fontFamily: FONT_LATIN,
+          }}
+        >
+          kimi-core {coreCtx === "full" ? "冷启动 + 每轮检索" : "每轮检索"} · 仅 API 路
+        </div>
+      )}
+
+      {/* Two doors on one row, one job each: closeout summarizes into memory
+          and then opens a fresh window; 新窗口 only opens the window. Without a
+          generation backend closeout has nothing to summarize with, so it sits
+          disabled rather than silently degrading into the other button. */}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          type="button"
+          onClick={onCloseout}
+          disabled={!closeoutReady}
+          title={closeoutReady ? "总结存进 memory, 再开新窗" : "要先配一个生成后端"}
+          style={{
+            flex: 1,
+            padding: "7px 4px",
+            fontSize: 10,
+            letterSpacing: 2,
+            border: `1px solid ${closeoutReady ? (p.theme === "day" ? p.roseHi : p.gold) : p.ruleSoft}`,
+            background: closeoutReady
+              ? p.theme === "day"
+                ? "rgba(176,64,99,.08)"
+                : "rgba(230,205,150,.08)"
+              : "transparent",
+            color: closeoutReady ? (p.theme === "day" ? p.roseHi : p.goldHi) : p.inkMute,
+            cursor: closeoutReady ? "pointer" : "default",
+            opacity: closeoutReady ? 1 : 0.55,
+            fontFamily: FONT_LATIN,
+            borderRadius: 6,
+            textTransform: "uppercase",
+          }}
+        >
+          closeout
+        </button>
+        <button
+          type="button"
+          onClick={onFresh}
+          style={{
+            flex: 1,
+            padding: "7px 4px",
+            fontSize: 10,
+            letterSpacing: 2,
+            border: `1px solid ${p.theme === "day" ? p.roseHi : p.gold}`,
+            background: p.theme === "day" ? "rgba(176,64,99,.08)" : "rgba(230,205,150,.08)",
+            color: p.theme === "day" ? p.roseHi : p.goldHi,
+            cursor: "pointer",
+            fontFamily: FONT_CN,
+            borderRadius: 6,
+          }}
+        >
+          新窗口
+        </button>
+      </div>
+      <Link
+        href="/chat/history"
+        style={{
+          display: "block",
+          marginTop: 6,
+          padding: "6px 10px",
+          fontSize: 9,
+          letterSpacing: 2,
+          border: `1px solid ${p.ruleSoft}`,
+          color: p.inkSoft,
+          fontFamily: FONT_LATIN,
+          borderRadius: 6,
+          textAlign: "center",
+          textDecoration: "none",
+          textTransform: "uppercase",
+        }}
+      >
+        过往 sessions
+      </Link>
+    </div>
   );
 }
 
@@ -1275,71 +3251,74 @@ function renderEmphasis(text: string): ReactNode {
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     if (m[1] !== undefined) nodes.push(<strong key={k++} style={{ fontWeight: 600 }}>{m[1]}</strong>);
-    else nodes.push(<em key={k++}>{m[2]}</em>);
+    // Chinese has no italic face, so `font-style: italic` is a synthesised
+    // slant: the glyph gains no width but its ink leans right, and the last
+    // character of a run reaches out of its own cell into whatever follows —
+    // against the bubble's padding it reads as having been bitten off. A small
+    // italic correction gives that ink somewhere to go (the same trick as TeX's
+    // \/); 0.2em is about what a full-width glyph overhangs at that slant.
+    else
+      nodes.push(
+        <em key={k++} style={{ paddingInlineEnd: "0.2em", opacity: 0.85 }}>
+          {m[2]}
+        </em>,
+      );
     last = re.lastIndex;
   }
   if (last < text.length) nodes.push(text.slice(last));
   return nodes.length > 0 ? nodes : text;
 }
 
-// Calculate paragraph display delay proportional to length (human-like pacing)
-function paragraphDelay(text: string): number {
-  const len = text.length;
-  if (len <= 20) return 200;
-  if (len <= 60) return 350;
-  if (len <= 150) return 550;
-  return 850;
-}
-
-// Split text into sentences for progressive rendering (。！？.!?\n delimiters, kept with sentence)
-function splitSentences(text: string): string[] {
-  if (!text) return [""];
-  const parts = text.split(/(?<=[。！？.!?\n])/);
-  return parts.filter((s) => s.trim().length > 0);
-}
-
-function splitParagraphs(text: string): string[] {
-  if (!text) return [""];
-  return text.split(/\n{2,}/).filter((s) => s.trim().length > 0);
-}
-
-
 function MessageItem({
   msg,
-  palette,
+  p,
+  avatarsOn,
+  avatarUrl,
   showTs,
+  streaming,
+  thinkStartedAt,
   onCopy,
-  onRetry,
+  onFork,
+  onRewind,
+  onSwipe,
 }: {
   msg: ChatMessage;
-  palette: ChatPalette;
+  p: Palette;
+  avatarsOn: boolean;
+  avatarUrl?: string;
   showTs: boolean;
+  streaming: boolean;
+  thinkStartedAt?: number;
   onCopy: () => void;
-  onRetry?: () => void;
+  onFork: () => void;
+  onRewind: () => void;
+  onSwipe?: (dir: 1 | -1) => void;
 }) {
-  const [showActions, setShowActions] = useState(false);
-  const [showThinking, setShowThinking] = useState(false);
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const [playState, setPlayState] = useState<"idle" | "loading" | "playing" | "error">("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null); // cache the blob url so the same reply isn't re-synthesized
-  const isUser = msg.role === "user";
-  const p = palette;
+  const audioUrlRef = useRef<string | null>(null);
+  const mine = msg.role === "user";
 
   const tsLabel = useMemo(() => {
     try {
       const d = new Date(msg.ts);
-      const m = String(d.getMonth() + 1).padStart(2, "0");
-      const day = String(d.getDate()).padStart(2, "0");
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mm = String(d.getMinutes()).padStart(2, "0");
-      return `${m}.${day} ${hh}:${mm}`;
+      return `${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")} ${String(
+        d.getHours(),
+      ).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     } catch {
       return "";
     }
   }, [msg.ts]);
 
-  // release the cached audio blob on unmount
+  const clockLabel = useMemo(() => {
+    try {
+      const d = new Date(msg.ts);
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    } catch {
+      return "";
+    }
+  }, [msg.ts]);
+
   useEffect(
     () => () => {
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
@@ -1347,8 +3326,8 @@ function MessageItem({
     [],
   );
 
-  // "听" — speak this reply via /api/tts. Reuses the cached blob (the same reply is
-  // not re-synthesized); clicking while playing stops it; on failure it shows 重试.
+  // Speak this reply via /api/tts. The blob is cached, so the same reply is not
+  // re-synthesized; tapping while it plays stops it.
   async function playVoice() {
     if (playState === "playing" && audioRef.current) {
       audioRef.current.pause();
@@ -1380,308 +3359,405 @@ function MessageItem({
     }
   }
 
-  return (
+  const sideColor = mine ? p.rose : p.gold;
+
+  // A message that is only a link shows the card alone — the raw URL in a
+  // bubble above it would be the same information twice.
+  const linkOnly = !!msg.link && msg.content.trim() === msg.link.url;
+
+  // The bubble itself, shared by both readings. Width is capped on the column
+  // that holds it, not here: a percentage on a shrink-to-fit box measures
+  // against its own resolved width and folds short lines in half.
+  const segments = msg.content && !linkOnly ? splitParagraphs(msg.content) : [];
+  /**
+   * One bubble per paragraph, each on its own. With avatars on they become one
+   * row each with their own portrait beside them — the way a messenger shows a
+   * run of short messages — so the grouping is decided by the caller, not here.
+   */
+  const bubbleNodes = segments.map((seg, i) => {
+    const first = i === 0;
+    const last = i === segments.length - 1;
+    return (
+          <div
+            key={i}
+            style={{
+              position: "relative",
+              maxWidth: "100%",
+              background: mine ? p.bubbleMe : p.bubbleThem,
+              border: `1px solid ${mine ? p.bubbleMeBorder : p.bubbleThemBorder}`,
+              borderRadius: 10,
+              padding: "9px 14px",
+              boxShadow:
+                p.theme === "day"
+                  ? "0 8px 18px rgba(120,70,70,.08)"
+                  : "inset 0 1px 0 rgba(230,205,150,.08), 0 8px 18px rgba(0,0,0,.4)",
+              fontFamily: FONT_CN,
+              fontSize: "var(--kimi-chat-fs, 12px)",
+              lineHeight: 1.75,
+              color: p.ink,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {/* the bracket corners belong to the group: top-left on the first
+                piece, bottom-right on the last */}
+            {first && (
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  left: -1,
+                  top: -1,
+                  width: 10,
+                  height: 10,
+                  borderLeft: `1px solid ${mine ? p.bubbleMeCorner : p.bubbleThemCorner}`,
+                  borderTop: `1px solid ${mine ? p.bubbleMeCorner : p.bubbleThemCorner}`,
+                  borderTopLeftRadius: 10,
+                }}
+              />
+            )}
+            {last && (
+              <span
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  right: -1,
+                  bottom: -1,
+                  width: 10,
+                  height: 10,
+                  borderRight: `1px solid ${mine ? p.bubbleMeCorner : p.bubbleThemCorner}`,
+                  borderBottom: `1px solid ${mine ? p.bubbleMeCorner : p.bubbleThemCorner}`,
+                  borderBottomRightRadius: 10,
+                }}
+              />
+            )}
+            {renderEmphasis(seg)}
+      </div>
+    );
+  });
+
+  /** No-avatar path: the paragraphs stacked as one column. */
+  const bubbleColumn = bubbleNodes.length ? (
     <div
       style={{
-        marginTop: showTs ? 22 : 8,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: mine ? "flex-end" : "flex-start",
+        // Matches the row gap of the avatar reading — split sentences need a seam.
+        gap: 6,
+        maxWidth: "100%",
       }}
     >
+      {bubbleNodes}
+    </div>
+  ) : null;
+
+  // Everything that hangs off one turn, in order.
+  // A turn's non-bubble parts in two halves: before the bubbles (byline,
+  // thinking, tools) and after them (picture, link card, marks, cost). Split
+  // because the avatar path inserts "one row per paragraph, one portrait each"
+  // between them, and neither half takes a portrait — they are not something
+  // anyone said.
+  const columnStyle = {
+    display: "flex" as const,
+    flexDirection: "column" as const,
+    alignItems: mine ? ("flex-end" as const) : ("flex-start" as const),
+    gap: 4,
+    minWidth: 0,
+    maxWidth: "100%",
+  };
+
+  // Collected rather than written as one div, because an empty half must not be
+  // rendered at all. The avatar reading gives this half a row and a portrait of
+  // its own, and on one's own turn it is always empty — thinking and tools belong
+  // to the other voice — so rendering it anyway puts a portrait with nothing
+  // beside it above every line one sends.
+  const beforeNodes: ReactNode[] = [];
+
+  if (!avatarsOn) {
+    beforeNodes.push(
+      <span
+        key="byline"
+        style={{ fontSize: 6, letterSpacing: 2, color: mine ? p.roseDim : p.goldDim, fontFamily: FONT_LATIN }}
+      >
+        {mine ? "EGO" : "ILLE"} · <span style={ONUM}>{clockLabel}</span>
+      </span>,
+    );
+  }
+
+  if (!mine && (msg.thinking || streaming)) {
+    beforeNodes.push(
+      <div key="think" style={{ width: "100%" }}>
+        <Cogitatio
+          p={p}
+          text={msg.thinking}
+          streaming={streaming && !msg.content}
+          startedAt={thinkStartedAt}
+          seconds={msg.thinkingSec}
+        />
+      </div>,
+    );
+  }
+
+  if (!mine && msg.tools && msg.tools.length > 0) {
+    beforeNodes.push(
+      <div key="tools" style={{ width: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
+        {msg.tools.map((t) => (
+          <Actus key={t.id} p={p} tool={t} />
+        ))}
+      </div>,
+    );
+  }
+
+  const bodyBefore = beforeNodes.length > 0 ? <div style={columnStyle}>{beforeNodes}</div> : null;
+
+  /**
+   * A picture and a link card are also things someone sent, so they belong with
+   * the bubbles: one row each, one portrait each. The marks and the cost below
+   * are not — those are the turn's footnotes.
+   */
+  const mediaNodes: ReactNode[] = [];
+  if (msg.image) {
+    mediaNodes.push(<Fragment key="img"><ImageBubble
+          p={p}
+          imageId={msg.image.id}
+          src={msg.image.url}
+          w={msg.image.w}
+          h={msg.image.h}
+          timeLabel={avatarsOn ? clockLabel : undefined}
+        /></Fragment>);
+  }
+  if (msg.link) {
+    mediaNodes.push(<Fragment key="link"><LinkCard p={p} link={msg.link} mine={mine} compact={avatarsOn} /></Fragment>);
+  }
+
+  // The footnotes. Collected for the same reason: an empty half would still eat a
+  // gap, and it takes no portrait, so there would be nothing to explain the space.
+  const afterNodes: ReactNode[] = [];
+
+  // One's own message gets marks too, copy and rewind only. Rewind on one's own
+  // line means "this one does not count, put it back in the composer" — which is
+  // what `rewindTo` already does: it walks back to the user turn that produced the
+  // reply, and on a user turn that is the turn itself. Forking and listening are
+  // things one does to a reply, so they stay on that side.
+  if (msg.content && !streaming) {
+    afterNodes.push(
+      mine ? (
+        <ActionMarks key="marks" p={p} onCopy={onCopy} onRewind={onRewind} />
+      ) : (
+        <ActionMarks
+          key="marks"
+          p={p}
+          onCopy={onCopy}
+          onFork={onFork}
+          onRewind={onRewind}
+          onListen={playVoice}
+          listenState={playState}
+          swipe={
+            onSwipe
+              ? {
+                  index: msg.swipeIndex ?? 0,
+                  total: msg.swipes?.length ?? 1,
+                  onMove: onSwipe,
+                }
+              : undefined
+          }
+        />
+      ),
+    );
+  }
+
+  if (msg.cost) {
+    const ctx = contextTokens(msg.cost);
+    // CTX before IN because it is the reading one actually wants: how much of
+    // the conversation this turn carried. IN is only the part that was not
+    // already cached, which on a long thread is a handful of tokens — true, and
+    // by itself it looks like the context is gone.
+    // Share of that context served from cache. Measured against `ctx` rather
+    // than a sum computed here, so it stays right on a backend whose input count
+    // already contains its cached part — re-adding it there would count the same
+    // tokens twice and quietly understate the hit rate.
+    const hit = ctx > 0 ? (msg.cost.cacheReadTok ?? 0) / ctx : null;
+    afterNodes.push(
+      <span
+        key="cost"
+        style={{
+          ...ONUM,
+          fontSize: 8,
+          letterSpacing: 1.5,
+          color: p.inkMute,
+          fontFamily: FONT_LATIN,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+        }}
+        title={
+          msg.cost.plan && msg.cost.costUsd != null
+            ? `按 API 价折算 ≈ $${msg.cost.costUsd.toFixed(4)}`
+            : undefined
+        }
+      >
+        <span>
+          {ctx > 0 ? `CTX ${ctx} · ` : ""}IN {msg.cost.inTok} · OUT {msg.cost.outTok}
+          {msg.cost.plan
+            ? " · PLAN"
+            : msg.cost.costUsd != null
+              ? ` · $${msg.cost.costUsd.toFixed(4)}`
+              : ""}
+        </span>
+        {hit != null && (
+          <>
+            <span style={{ display: "inline-flex", width: 7, height: 7 }}>
+              <RingGauge color={p.gold} track={p.ruleSoft} frac={hit} size={7} width={1.4} />
+            </span>
+            <span style={{ color: p.goldDim }}>{Math.round(hit * 100)}%</span>
+          </>
+        )}
+      </span>,
+    );
+  }
+
+  // Which session answered, on the backends that keep one. The head of the id
+  // stays put for as long as the conversation does; a new one means the CLI
+  // started over and no longer has what was said before it — colour carries
+  // that (warn = freshly opened), not a word next to the id.
+  if (msg.session) {
+    afterNodes.push(
+      <span
+        key="session"
+        style={{
+          ...ONUM,
+          fontSize: 8,
+          letterSpacing: 1.5,
+          fontFamily: FONT_LATIN,
+          color: msg.session.resumed ? p.inkMute : p.warn,
+        }}
+        title={msg.session.resumed ? "同一条 CLI session" : "这一轮开了新的 CLI session"}
+      >
+        {msg.session.sid}
+      </span>,
+    );
+  }
+
+  const bodyAfter = afterNodes.length > 0 ? <div style={columnStyle}>{afterNodes}</div> : null;
+
+  /**
+   * One row, two cells: content plus a portrait slot, ordered by `mine` so the
+   * content always lands on the wide track. With withAvatar false the slot stays
+   * empty — thinking, tools and marks are not something anyone said, so they get
+   * no portrait, but the cell still has to be there or they would sit a
+   * portrait's width out of line with the bubbles.
+   */
+  const pair = (content: ReactNode, withAvatar: boolean) => {
+    if (!content) return null;
+    const slot = withAvatar ? (
+      <Avatar p={p} mine={mine} src={avatarUrl} size={32} />
+    ) : (
+      <span aria-hidden />
+    );
+    // 86% of the content track, which is about the 76%-of-the-row this used to be
+    // once the portrait gutter is taken out. A ceiling, not a width — a short line
+    // still gets a short bubble; this only stops a long one running edge to edge.
+    const cell = (
+      <div style={{ minWidth: 0, justifySelf: mine ? "end" : "start", maxWidth: "86%" }}>
+        {content}
+      </div>
+    );
+    return mine ? (
+      <>
+        {cell}
+        {slot}
+      </>
+    ) : (
+      <>
+        {slot}
+        {cell}
+      </>
+    );
+  };
+
+  return (
+    <div style={{ marginTop: showTs ? 10 : 0 }}>
       {showTs && (
         <div
           style={{
             textAlign: "center",
-            fontSize: 10,
+            fontSize: 8,
             color: p.inkMute,
-            marginBottom: 12,
-            letterSpacing: 1,
-            fontStyle: "italic",
+            marginBottom: 10,
+            letterSpacing: 2,
+            fontFamily: FONT_LATIN,
+            ...ONUM,
           }}
         >
           {tsLabel}
         </div>
       )}
-      {/* tool calls — assistant only. 每个工具一行, 卡片容器 + 状态图标,
-          点击 expand 显示详情. */}
-      {!isUser && msg.tools && msg.tools.length > 0 && (
-        <div style={{ textAlign: "center" }}>
-        <div style={{
-          marginBottom: 6,
-          borderRadius: 6,
-          border: `1px solid ${p.hairline}`,
-          padding: "4px 10px",
-          display: "inline-block",
-          maxWidth: "90%",
-          boxSizing: "border-box",
-        }}>
-          {msg.tools.map((t) => {
-            const expanded = expandedTools.has(t.id);
-            const statusIcon = t.status === "pending" ? "⋯ " : t.status === "error" ? "✗ " : "✓ ";
-            const formattedArgs = (() => {
-              if (!t.arguments) return null;
-              try {
-                return JSON.stringify(JSON.parse(t.arguments), null, 2);
-              } catch {
-                return t.arguments;
-              }
-            })();
-            return (
-              <div key={t.id} style={{ padding: "1px 0" }}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpandedTools((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(t.id)) next.delete(t.id);
-                      else next.add(t.id);
-                      return next;
-                    })
-                  }
-                  style={{
-                    fontSize: 11,
-                    letterSpacing: 0.5,
-                    color: p.inkMute,
-                    textAlign: "center",
-                    width: "100%",
-                    fontStyle: "italic",
-                    fontFamily: FONT_STACK,
-                    lineHeight: 1.5,
-                    padding: 0,
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                  }}
-                >
-                  {statusIcon}
-                  {t.label}
-                </button>
-                {expanded && (
-                  <div
-                    style={{
-                      marginTop: 4,
-                      padding: "6px 10px",
-                      borderRadius: 6,
-                      background: "rgba(255,255,255,0.04)",
-                      border: `1px solid ${p.hairline}`,
-                      fontSize: 11,
-                      lineHeight: 1.55,
-                      color: p.inkSoft,
-                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      textAlign: "left",
-                    }}
-                  >
-                    {(t.result || t.preview || formattedArgs) ? (
-                      <>
-                        {(t.result || t.preview) && (
-                          <div style={{ marginBottom: formattedArgs ? 6 : 0, opacity: 0.85 }}>
-                            {"→"} {t.result ?? t.preview}
-                          </div>
-                        )}
-                        {formattedArgs && (
-                          <pre
-                            style={{
-                              margin: 0,
-                              fontSize: 11,
-                              lineHeight: 1.55,
-                              color: p.inkSoft,
-                              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                              whiteSpace: "pre-wrap",
-                              wordBreak: "break-word",
-                              opacity: 0.85,
-                            }}
-                          >
-                            {formattedArgs}
-                          </pre>
-                        )}
-                      </>
-                    ) : (
-                      <div style={{ fontSize: 11, fontStyle: "italic", color: p.inkMute }}>（无详情）</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        </div>
-      )}
-      {/* thinking block — assistant only, collapsible, default 收 */}
-      {!isUser && msg.thinking && msg.thinking.length > 0 && (
-        <div style={{ marginBottom: 4 }}>
-          <button
-            type="button"
-            onClick={() => setShowThinking((v) => !v)}
-            style={{
-              fontSize: 11,
-              letterSpacing: 1,
-              color: p.inkMute,
-              background: "transparent",
-              border: "none",
-              padding: "2px 0",
-              cursor: "pointer",
-              fontFamily: FONT_STACK,
-              fontStyle: "italic",
-            }}
-          >
-            {showThinking ? "▼" : "▶"} thinking · {msg.thinking.length} 字
-          </button>
-          {showThinking && (
-            <div
-              style={{
-                marginTop: 6,
-                paddingLeft: 12,
-                borderLeft: `2px solid ${p.hairline}`,
-                fontSize: 13,
-                color: p.inkSoft,
-                fontStyle: "italic",
-                lineHeight: 1.6,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                opacity: 0.85,
-              }}
-            >
-              {msg.thinking}
-            </div>
-          )}
-        </div>
-      )}
 
-      <div
-        onClick={() => setShowActions((v) => !v)}
-        style={{
-          display: "flex",
-          justifyContent: isUser ? "flex-end" : "flex-start",
-          cursor: "pointer",
-        }}
-      >
+      {avatarsOn ? (
+        // 6c — round portrait beside the bubble, the other voice left and mine
+        // right. A grid, like the spine layout below, rather than a flex row:
+        // as a `flex: 0 1 auto` item the column gets squeezed to min-content,
+        // and min-content for Chinese is one character — every bubble collapses
+        // into a single vertical column of glyphs. A grid track does not squeeze.
         <div
           style={{
-            maxWidth: "82%",
-            fontSize: 15.5,
-            lineHeight: 1.65,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            textAlign: "left",
-            // user 气泡(右), assistant 气泡(左); 气泡内文字一律左对齐
-            ...(isUser
-              ? {
-                  color: p.ink,
-                  background: p.bubbleBg,
-                  padding: "10px 14px",
-                  borderRadius: 18,
-                }
-              : {
-                  color: p.ink,
-                  background: p.bubbleBg,
-                  padding: "10px 14px",
-                  borderRadius: 18,
-                }),
+            display: "grid",
+            gridTemplateColumns: mine ? "1fr 32px" : "32px 1fr",
+            // A row gap of 6 is the line between "several sentences" and "one
+            // block": each bubble is a row here, and at 0 two neighbours are
+            // separated only by their borders, so a reply split into three still
+            // reads as a single slab.
+            gap: "6px 8px",
+            alignItems: "start",
           }}
         >
-          {msg.content ? (
-            renderEmphasis(msg.content)
-          ) : (
-            <span style={{ color: p.inkMute, fontStyle: "italic" }}>...</span>
-          )}
+          {/* 工具与沉吟也带头像 —— 一轮从这里开头, 头像标的是「这一段是谁的」。
+              只有最后那格 (记号 + 钱) 不带: 它是注脚, 不是谁说的一段。 */}
+          {pair(bodyBefore, true)}
+          {/* One row per paragraph, each with its own portrait — a messenger
+              shows a run of short messages that way, not sharing one. */}
+          {bubbleNodes.map((node, i) => (
+            <Fragment key={`b${i}`}>{pair(node, true)}</Fragment>
+          ))}
+          {/* The picture and the link card get a row and a portrait too. */}
+          {mediaNodes.map((node, i) => (
+            <Fragment key={`m${i}`}>{pair(node, true)}</Fragment>
+          ))}
+          {pair(bodyAfter, false)}
         </div>
-      </div>
-      {!isUser && msg.cost && (
-        <div
-          style={{
-            marginTop: 3,
-            textAlign: "left",
-            fontSize: 11,
-            fontFamily: FONT_STACK,
-            textTransform: "uppercase",
-          }}
-        >
-          in {msg.cost.inTok} · out {msg.cost.outTok}
-        </div>
-      )}
-      {showActions && (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: isUser ? "flex-end" : "flex-start",
-            marginTop: 4,
-            gap: 8,
-          }}
-        >
-          {!isUser && msg.content && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                playVoice();
-              }}
-              style={{
-                fontSize: 9,
-                letterSpacing: 2,
-                padding: "3px 10px",
-                border: `0.4px solid ${p.hairline}`,
-                background: "transparent",
-                color: playState === "error" ? p.accent : p.inkMute,
-                cursor: "pointer",
-                fontFamily: FONT_STACK,
-                borderRadius: 4,
-              }}
-            >
-              {playState === "loading"
-                ? "··· 合成中"
-                : playState === "playing"
-                  ? "◼ 停"
-                  : playState === "error"
-                    ? "✕ 重试"
-                    : "听"}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onCopy();
-              setShowActions(false);
-            }}
+      ) : (
+        // 6a / 6b — node on the spine, the turn hanging off it
+        <div style={{ display: "grid", gridTemplateColumns: "19px 1fr", gap: "0 10px" }}>
+          <span
+            aria-hidden
             style={{
-              fontSize: 9,
-              letterSpacing: 2,
-              padding: "3px 10px",
-              border: `0.4px solid ${p.hairline}`,
-              background: "transparent",
-              color: p.inkMute,
-              cursor: "pointer",
-              fontFamily: FONT_STACK,
-              borderRadius: 4,
-              textTransform: "uppercase",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              border: `1px solid ${sideColor}`,
+              boxSizing: "border-box",
+              background: mine ? "rgba(176,64,99,.4)" : "rgba(201,167,106,.35)",
+              margin: "4px auto 0",
+            }}
+          />
+          {/* No-avatar path: one column, the two halves around the bubbles. */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: mine ? "flex-end" : "flex-start",
+              gap: 4,
+              maxWidth: "82%",
+              minWidth: 0,
+              justifySelf: mine ? "end" : "start",
             }}
           >
-            copy
-          </button>
-          {onRetry && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowActions(false);
-                onRetry();
-              }}
-              style={{
-                fontSize: 9,
-                letterSpacing: 2,
-                padding: "3px 10px",
-                border: `0.4px solid ${p.hairline}`,
-                background: "transparent",
-                color: p.inkMute,
-                cursor: "pointer",
-                fontFamily: FONT_STACK,
-                borderRadius: 4,
-                textTransform: "uppercase",
-              }}
-            >
-              ↻ retry
-            </button>
-          )}
+            {bodyBefore}
+            {bubbleColumn}
+            {mediaNodes}
+            {bodyAfter}
+          </div>
         </div>
       )}
     </div>

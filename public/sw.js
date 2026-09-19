@@ -2,14 +2,16 @@
 // Strategy:
 //   - /api/auth/* + /api/chat/* + /api/auth/recovery: network only (auth/SSE 不能 cache)
 //   - /api/*: network-first, fall back to cache (read API 离线显示上次)
-//   - /_next/static, /icon-*, /apple-touch-icon, /images, /fonts: cache-first
-//     (immutable assets, 跨 deploy 用 hash 自动 invalidate)
+//   - /_next/static, /fonts: cache-first (genuinely immutable — hashed names)
+//   - /images and other pictures: stale-while-revalidate. Their paths carry no
+//     hash, so editing a file leaves its URL unchanged; cache-first would mean
+//     an installed PWA never sees the new version.
 //   - everything else: stale-while-revalidate (page HTML 离线显示, 同时后台
 //     刷新)
 //
 // Cache 名带版本, 升级 SW 时旧 cache 自动 unregister + 清掉.
 
-const VERSION = "v55-2026-07-02"; // v0.31 · stale since v0.17 — bump per release so activate cleanup reclaims old runtime caches
+const VERSION = "v58-2026-07-30"; // pictures moved to SWR; this bump also drops the letterboxed backgrounds from the old runtime cache
 
 const APP_SHELL_CACHE = `kimi-shell-${VERSION}`;
 const RUNTIME_CACHE = `kimi-runtime-${VERSION}`;
@@ -51,12 +53,55 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// ---- Web Push: the wake paper lands silent on the lock screen ----
+// The push payload is { title, body, url, tag }. `silent: true` is deliberate —
+// a paper written for someone asleep shouldn't make a sound. Delete that line if
+// you want a chime.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    /* non-JSON payload — ignore */
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title || "纸到了", {
+      body: data.body || "",
+      tag: data.tag || "ephemera",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      silent: true,
+      data: { url: data.url || "/room/ephemera" },
+    }),
+  );
+});
+
+// Tapping the notification focuses an open tab or opens the paper spout.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "/room/ephemera";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if ("focus" in client) return client.focus();
+      }
+      return self.clients.openWindow(url);
+    }),
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return; // 只 cache GET
 
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // 只本域
+
+  // Dev bypass: on localhost, never cache-serve. Turbopack's dev chunk names are
+  // stable while their *content* changes on recompile, so a cache-first SW would
+  // hand back stale JS that no longer matches the server's HTML — hydration then
+  // fails silently. Let the network own dev; caching is a production concern.
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return;
 
   // 不 cache 的: auth + chat + recovery (auth flow / SSE)
   if (
@@ -73,14 +118,27 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // immutable assets cache-first
+  // Genuinely immutable: the filename carries a content hash, so a change to
+  // the bytes changes the URL. Safe to serve from cache forever.
   if (
     url.pathname.startsWith("/_next/static/") ||
-    url.pathname.startsWith("/images/") ||
     url.pathname.startsWith("/fonts/") ||
-    /\.(png|jpg|jpeg|gif|svg|webp|woff2?|ttf|otf|ico)$/i.test(url.pathname)
+    /\.(woff2?|ttf|otf)$/i.test(url.pathname)
   ) {
     event.respondWith(cacheFirst(req, RUNTIME_CACHE));
+    return;
+  }
+
+  // Pictures are not immutable — /images paths have no hash, so replacing a
+  // file leaves its URL alone. Cache-first would pin an installed PWA to the old
+  // bytes indefinitely: editing a background image would simply never arrive.
+  // Stale-while-revalidate keeps the instant paint and picks up the new file on
+  // the following load.
+  if (
+    url.pathname.startsWith("/images/") ||
+    /\.(png|jpg|jpeg|gif|svg|webp|ico)$/i.test(url.pathname)
+  ) {
+    event.respondWith(staleWhileRevalidate(req, RUNTIME_CACHE));
     return;
   }
 
